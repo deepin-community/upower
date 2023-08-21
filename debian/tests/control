@@ -1,13 +1,13 @@
-Tests: upstream-system
-Depends: @,
-         python3,
-         python3-gi,
+Tests: installed-tests
+Depends: upower-tests,
          python3-dbus,
-         python3-dbusmock,
          python3-packaging,
-         gir1.2-glib-2.0,
+         python3-dbusmock,
+         gir1.2-upowerglib-1.0,
          gir1.2-umockdev-1.0,
-         umockdev
+         umockdev,
+         gnome-desktop-testing
+Restrictions: allow-stderr
 
 Tests: build
 Depends: libupower-glib-dev,

@@ -20,9 +20,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
-#endif
+#include "config.h"
 
 #include <string.h>
 #include <signal.h>
@@ -38,13 +36,11 @@
 
 #include "up-daemon.h"
 #include "up-kbd-backlight.h"
-#include "up-wakeups.h"
 
 #define DEVKIT_POWER_SERVICE_NAME "org.freedesktop.UPower"
 
 typedef struct UpState {
 	UpKbdBacklight *kbd_backlight;
-	UpWakeups *wakeups;
 	UpDaemon *daemon;
 	GMainLoop *loop;
 } UpState;
@@ -55,7 +51,6 @@ up_state_free (UpState *state)
 	up_daemon_shutdown (state->daemon);
 
 	g_clear_object (&state->kbd_backlight);
-	g_clear_object (&state->wakeups);
 	g_clear_object (&state->daemon);
 	g_clear_pointer (&state->loop, g_main_loop_unref);
 
@@ -68,7 +63,6 @@ up_state_new (void)
 	UpState *state = g_new0 (UpState, 1);
 
 	state->kbd_backlight = up_kbd_backlight_new ();
-	state->wakeups = up_wakeups_new ();
 	state->daemon = up_daemon_new ();
 	state->loop = g_main_loop_new (NULL, FALSE);
 
@@ -86,7 +80,6 @@ up_main_bus_acquired (GDBusConnection *connection,
 	UpState *state = user_data;
 
 	up_kbd_backlight_register (state->kbd_backlight, connection);
-	up_wakeups_register (state->wakeups, connection);
 	if (!up_daemon_startup (state->daemon, connection)) {
 		g_warning ("Could not startup; bailing out");
 		g_main_loop_quit (state->loop);
@@ -114,6 +107,15 @@ up_main_sigint_cb (gpointer user_data)
 {
 	UpState *state = user_data;
 	g_debug ("Handling SIGINT");
+	g_main_loop_quit (state->loop);
+	return FALSE;
+}
+
+static gboolean
+up_main_sigterm_cb (gpointer user_data)
+{
+	UpState *state = user_data;
+	g_debug ("Handling SIGTERM");
 	g_main_loop_quit (state->loop);
 	return FALSE;
 }
@@ -176,6 +178,7 @@ main (gint argc, gchar **argv)
 	gboolean timed_exit = FALSE;
 	gboolean immediate_exit = FALSE;
 	guint timer_id = 0;
+	gboolean debug = FALSE;
 	gboolean verbose = FALSE;
 	UpState *state;
 	GBusNameOwnerFlags bus_flags;
@@ -192,6 +195,8 @@ main (gint argc, gchar **argv)
 		  _("Replace the old daemon"), NULL},
 		{ "verbose", 'v', 0, G_OPTION_ARG_NONE, &verbose,
 		  _("Show extra debugging information"), NULL },
+		{ "debug", 'd', 0, G_OPTION_ARG_NONE, &debug,
+		  _("Enable debugging (implies --verbose)"), NULL },
 		{ NULL}
 	};
 
@@ -208,6 +213,9 @@ main (gint argc, gchar **argv)
 		return 1;
 	}
 	g_option_context_free (context);
+
+	if (debug)
+		verbose = TRUE;
 
 	/* verbose? */
 	if (verbose) {
@@ -240,11 +248,19 @@ main (gint argc, gchar **argv)
 
 	/* initialize state */
 	state = up_state_new ();
+	up_daemon_set_debug (state->daemon, debug);
 
 	/* do stuff on ctrl-c */
 	g_unix_signal_add_full (G_PRIORITY_DEFAULT,
 				SIGINT,
 				up_main_sigint_cb,
+				state,
+				NULL);
+
+	/* Clean shutdown on SIGTERM */
+	g_unix_signal_add_full (G_PRIORITY_DEFAULT,
+				SIGTERM,
+				up_main_sigterm_cb,
 				state,
 				NULL);
 

@@ -1,4 +1,2 @@
 version=4
-opts="searchmode=plain,downloadurlmangle=s{/uploads}{/upower/upower/uploads}" \
-https://gitlab.freedesktop.org/api/v4/projects/upower%2fupower/releases \
-/uploads/[0-9a-z]+/upower-([0-9.]+)\.tar\.xz
+https://gitlab.freedesktop.org/upower/upower/tags?sort=updated_desc archive/v@ANY_VERSION@/upower-v\d\S*@ARCHIVE_EXT@

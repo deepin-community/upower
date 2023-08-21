@@ -21,9 +21,7 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
-#endif
+#include "config.h"
 
 #include <string.h>
 #include <math.h>
@@ -47,7 +45,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#include "up-types.h"
+#include "up-common.h"
 #include "up-device-hid.h"
 #include "up-constants.h"
 
@@ -85,13 +83,13 @@
 
 struct UpDeviceHidPrivate
 {
-	guint			 poll_timer_id;
 	int			 fd;
+	gboolean		 fake_device;
 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (UpDeviceHid, up_device_hid, UP_TYPE_DEVICE)
 
-static gboolean		 up_device_hid_refresh	 	(UpDevice *device);
+static gboolean		 up_device_hid_refresh	 	(UpDevice *device, UpRefreshReason reason);
 
 /**
  * up_device_hid_is_ups:
@@ -124,21 +122,6 @@ out:
 }
 
 /**
- * up_device_hid_poll:
- **/
-static gboolean
-up_device_hid_poll (UpDeviceHid *hid)
-{
-	UpDevice *device = UP_DEVICE (hid);
-
-	g_debug ("Polling: %s", up_device_get_object_path (device));
-	up_device_hid_refresh (device);
-
-	/* always continue polling */
-	return TRUE;
-}
-
-/**
  * up_device_hid_get_string:
  **/
 static const gchar *
@@ -158,20 +141,6 @@ up_device_hid_get_string (UpDeviceHid *hid, int sindex)
 
 	g_debug ("value: '%s'", sdesc.value);
 	return sdesc.value;
-}
-
-/**
- * up_device_hid_convert_device_technology:
- **/
-static UpDeviceTechnology
-up_device_hid_convert_device_technology (const gchar *type)
-{
-	if (type == NULL)
-		return UP_DEVICE_TECHNOLOGY_UNKNOWN;
-	if (g_ascii_strcasecmp (type, "pb") == 0 ||
-	    g_ascii_strcasecmp (type, "pbac") == 0)
-		return UP_DEVICE_TECHNOLOGY_LEAD_ACID;
-	return UP_DEVICE_TECHNOLOGY_UNKNOWN;
 }
 
 /**
@@ -207,7 +176,7 @@ up_device_hid_set_values (UpDeviceHid *hid, guint32 code, gint32 value)
 		break;
 	case UP_DEVICE_HID_CHEMISTRY:
 		type = up_device_hid_get_string (hid, value);
-		g_object_set (device, "technology", up_device_hid_convert_device_technology (type), NULL);
+		g_object_set (device, "technology", up_convert_device_technology (type), NULL);
 		break;
 	case UP_DEVICE_HID_RECHARGEABLE:
 		g_object_set (device, "is-rechargeable", (value != 0), NULL);
@@ -305,7 +274,6 @@ up_device_hid_coldplug (UpDevice *device)
 	UpDeviceHid *hid = UP_DEVICE_HID (device);
 	GUdevDevice *native;
 	gboolean ret = FALSE;
-	gboolean fake_device;
 	const gchar *device_file;
 	const gchar *type;
 	const gchar *vendor;
@@ -323,18 +291,18 @@ up_device_hid_coldplug (UpDevice *device)
 		goto out;
 	}
 
-	/* connect to the device */
-	g_debug ("using device: %s", device_file);
-	hid->priv->fd = open (device_file, O_RDONLY | O_NONBLOCK);
-	if (hid->priv->fd < 0) {
-		g_debug ("cannot open device file %s", device_file);
-		goto out;
-	}
-
 	/* first check that we are an UPS */
-	fake_device = g_udev_device_has_property (native, "UPOWER_FAKE_DEVICE");
-	if (!fake_device)
+	hid->priv->fake_device = g_udev_device_has_property (native, "UPOWER_FAKE_DEVICE");
+	if (!hid->priv->fake_device)
 	{
+		/* connect to the device */
+		g_debug ("using device: %s", device_file);
+		hid->priv->fd = open (device_file, O_RDONLY | O_NONBLOCK);
+		if (hid->priv->fd < 0) {
+			g_debug ("cannot open device file %s", device_file);
+			goto out;
+		}
+
 		ret = up_device_hid_is_ups (hid);
 		if (!ret) {
 			g_debug ("not a HID device: %s", device_file);
@@ -359,7 +327,7 @@ up_device_hid_coldplug (UpDevice *device)
 		      NULL);
 
 	/* coldplug everything */
-	if (fake_device)
+	if (hid->priv->fake_device)
 	{
 		ret = TRUE;
 		if (g_udev_device_get_property_as_boolean (native, "UPOWER_FAKE_HID_CHARGING"))
@@ -378,6 +346,8 @@ up_device_hid_coldplug (UpDevice *device)
 
 	/* fix up device states */
 	up_device_hid_fixup_state (device);
+
+	g_object_set (device, "poll-timeout", UP_DEVICE_HID_REFRESH_TIMEOUT, NULL);
 out:
 	return ret;
 }
@@ -388,7 +358,7 @@ out:
  * Return %TRUE on success, %FALSE if we failed to refresh or no data
  **/
 static gboolean
-up_device_hid_refresh (UpDevice *device)
+up_device_hid_refresh (UpDevice *device, UpRefreshReason reason)
 {
 	gboolean set = FALSE;
 	gboolean ret = FALSE;
@@ -396,6 +366,9 @@ up_device_hid_refresh (UpDevice *device)
 	struct hiddev_event ev[64];
 	int rd;
 	UpDeviceHid *hid = UP_DEVICE_HID (device);
+
+	if (hid->priv->fake_device)
+		goto update_time;
 
 	/* read any data */
 	rd = read (hid->priv->fd, ev, sizeof (ev));
@@ -425,6 +398,7 @@ up_device_hid_refresh (UpDevice *device)
 	/* fix up device states */
 	up_device_hid_fixup_state (device);
 
+update_time:
 	/* reset time */
 	g_object_set (device, "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC, NULL);
 out:
@@ -470,9 +444,6 @@ up_device_hid_init (UpDeviceHid *hid)
 {
 	hid->priv = up_device_hid_get_instance_private (hid);
 	hid->priv->fd = -1;
-	hid->priv->poll_timer_id = g_timeout_add_seconds (UP_DEVICE_HID_REFRESH_TIMEOUT,
-							  (GSourceFunc) up_device_hid_poll, hid);
-	g_source_set_name_by_id (hid->priv->poll_timer_id, "[upower] up_device_hid_poll (linux)");
 }
 
 /**
@@ -491,8 +462,6 @@ up_device_hid_finalize (GObject *object)
 
 	if (hid->priv->fd > 0)
 		close (hid->priv->fd);
-	if (hid->priv->poll_timer_id > 0)
-		g_source_remove (hid->priv->poll_timer_id);
 
 	G_OBJECT_CLASS (up_device_hid_parent_class)->finalize (object);
 }
@@ -511,13 +480,3 @@ up_device_hid_class_init (UpDeviceHidClass *klass)
 	device_class->get_on_battery = up_device_hid_get_on_battery;
 	device_class->refresh = up_device_hid_refresh;
 }
-
-/**
- * up_device_hid_new:
- **/
-UpDeviceHid *
-up_device_hid_new (void)
-{
-	return g_object_new (UP_TYPE_DEVICE_HID, NULL);
-}
-

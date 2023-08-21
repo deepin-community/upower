@@ -24,7 +24,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include <kvm.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <unistd.h>
@@ -49,9 +48,8 @@ static void	up_backend_class_init	(UpBackendClass	*klass);
 static void	up_backend_init	(UpBackend		*backend);
 static void	up_backend_finalize	(GObject		*object);
 
-static gboolean	up_backend_refresh_devices (gpointer user_data);
 static gboolean	up_backend_acpi_devd_notify (UpBackend *backend, const gchar *system, const gchar *subsystem, const gchar *type, const gchar *data);
-static gboolean	up_backend_create_new_device (UpBackend *backend, UpAcpiNative *native);
+static void	up_backend_create_new_device (UpBackend *backend, UpAcpiNative *native);
 static void	up_backend_lid_coldplug (UpBackend *backend);
 
 struct UpBackendPrivate
@@ -59,7 +57,6 @@ struct UpBackendPrivate
 	UpDaemon		*daemon;
 	UpDeviceList		*device_list;
 	GHashTable		*handle_map;
-	guint			poll_timer_id;
 	UpConfig		*config;
 	GDBusProxy		*seat_manager_proxy;
 };
@@ -81,30 +78,6 @@ static const gchar *handlers[] = {
 UpDevdHandler up_backend_acpi_devd_handler = {
 	.notify = up_backend_acpi_devd_notify
 };
-
-/**
- * up_backend_refresh_devices:
- **/
-static gboolean
-up_backend_refresh_devices (gpointer user_data)
-{
-	UpBackend *backend;
-	GPtrArray *array;
-	UpDevice *device;
-	guint i;
-
-	backend = UP_BACKEND (user_data);
-	array = up_device_list_get_array (backend->priv->device_list);
-
-	for (i = 0; i < array->len; i++) {
-		device = UP_DEVICE (g_ptr_array_index (array, i));
-		up_device_refresh_internal (device);
-	}
-
-	g_ptr_array_unref (array);
-
-	return TRUE;
-}
 
 /**
  * up_backend_acpi_devd_notify:
@@ -165,7 +138,7 @@ up_backend_acpi_devd_notify (UpBackend *backend, const gchar *system, const gcha
 		goto out;
 	}
 
-	up_device_refresh_internal (UP_DEVICE (object));
+	up_device_refresh_internal (UP_DEVICE (object), UP_REFRESH_EVENT);
 
 	if (object != NULL)
 		g_object_unref (object);
@@ -179,17 +152,17 @@ out:
 /**
  * up_backend_create_new_device:
  **/
-static gboolean
+static void
 up_backend_create_new_device (UpBackend *backend, UpAcpiNative *native)
 {
-	UpDevice *device;
-	gboolean ret;
+	g_autoptr(UpDevice) device = NULL;
 
-	device = UP_DEVICE (up_device_supply_new ());
-	ret = up_device_coldplug (device, backend->priv->daemon, G_OBJECT (native));
-	if (!ret)
-		g_object_unref (device);
-	else {
+	device = g_initable_new (UP_TYPE_DEVICE_SUPPLY, NULL, NULL,
+	                         "daemon", backend->priv->daemon,
+	                         "native", G_OBJECT (native),
+	                         "poll-timeout", UP_BACKEND_REFRESH_TIMEOUT,
+	                         NULL);
+	if (device) {
 		if (!strncmp (up_acpi_native_get_path (native), "dev.", strlen ("dev."))) {
 			const gchar *path;
 
@@ -209,10 +182,8 @@ up_backend_create_new_device (UpBackend *backend, UpAcpiNative *native)
 			}
 		}
 
-		g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, native, device);
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
 	}
-
-	return ret;
 }
 
 /**
@@ -262,7 +233,7 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
 			if (object != NULL) {
 				device = UP_DEVICE (object);
 				g_warning ("treating add event as change event on %s", up_device_get_object_path (device));
-				up_device_refresh_internal (device);
+				up_device_refresh_internal (device, UP_REFRESH_EVENT);
 			} else {
 				up_backend_create_new_device (backend, native);
 			}
@@ -284,12 +255,6 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
 
 	up_devd_init (backend);
 
-	backend->priv->poll_timer_id =
-		g_timeout_add_seconds (UP_BACKEND_REFRESH_TIMEOUT,
-			       (GSourceFunc) up_backend_refresh_devices,
-			       backend);
-	g_source_set_name_by_id (backend->priv->poll_timer_id, "[upower] up_backend_refresh_devices (freebsd)");
-
 	return TRUE;
 }
 
@@ -303,10 +268,6 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
 void
 up_backend_unplug (UpBackend *backend)
 {
-	if (backend->priv->poll_timer_id > 0) {
-		g_source_remove (backend->priv->poll_timer_id);
-		backend->priv->poll_timer_id = 0;
-	}
 	if (backend->priv->device_list != NULL) {
 		g_object_unref (backend->priv->device_list);
 		backend->priv->device_list = NULL;
@@ -345,41 +306,6 @@ up_backend_get_config (UpBackend  *backend)
 	return backend->priv->config;
 }
 
-/* Return value: a percentage value */
-gfloat
-up_backend_get_used_swap (UpBackend *backend)
-{
-	gfloat percent;
-	kvm_t *kd;
-	gchar errbuf[_POSIX2_LINE_MAX];
-	int nswdev;
-	struct kvm_swap kvmsw[16];
-
-	kd = kvm_openfiles (NULL, NULL, NULL, O_RDONLY, errbuf);
-	if (kd == NULL) {
-		g_warning ("failed to open kvm: '%s'", errbuf);
-		return 0.0f;
-	}
-
-	nswdev = kvm_getswapinfo (kd, kvmsw, 16, 0);
-	if (nswdev == 0) {
-		percent = 100.0f;
-		goto out;
-	}
-	if (nswdev < 0) {
-		g_warning ("failed to get swap info: '%s'", kvm_geterr (kd));
-		percent = 0.0f;
-		goto out;
-	}
-
-	percent = (gfloat) ((gfloat) ((gfloat) kvmsw[nswdev].ksw_used / (gfloat) kvmsw[nswdev].ksw_total) * 100.0f);
-
-out:
-	kvm_close (kd);
-
-	return percent;
-}
-
 /**
  * up_backend_class_init:
  * @klass: The UpBackendClass
@@ -395,13 +321,13 @@ up_backend_class_init (UpBackendClass *klass)
 			      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (UpBackendClass, device_added),
 			      NULL, NULL, NULL,
-			      G_TYPE_NONE, 2, G_TYPE_POINTER, G_TYPE_POINTER);
+			      G_TYPE_NONE, 1, UP_TYPE_DEVICE);
 	signals [SIGNAL_DEVICE_REMOVED] =
 		g_signal_new ("device-removed",
 			      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (UpBackendClass, device_removed),
 			      NULL, NULL, NULL,
-			      G_TYPE_NONE, 2, G_TYPE_POINTER, G_TYPE_POINTER);
+			      G_TYPE_NONE, 1, UP_TYPE_DEVICE);
 }
 
 /**
@@ -442,8 +368,6 @@ up_backend_finalize (GObject *object)
 		g_object_unref (backend->priv->device_list);
 	if (backend->priv->handle_map != NULL)
 		g_hash_table_unref (backend->priv->handle_map);
-	if (backend->priv->poll_timer_id > 0)
-		g_source_remove (backend->priv->poll_timer_id);
 	g_clear_object (&backend->priv->seat_manager_proxy);
 
 	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);

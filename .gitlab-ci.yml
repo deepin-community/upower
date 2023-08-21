@@ -1,0 +1,197 @@
+include:
+  - project: 'freedesktop/ci-templates'
+    ref: master
+    file: '/templates/fedora.yml'
+
+variables:
+  FDO_DISTRIBUTION_TAG: latest
+  FDO_DISTRIBUTION_VERSION: rawhide
+  FDO_UPSTREAM_REPO: "upower/$CI_PROJECT_NAME"
+  FEDORA_IMAGE: "$CI_REGISTRY/upower/$CI_PROJECT_NAME/fedora/$FDO_DISTRIBUTION_VERSION:$FDO_DISTRIBUTION_TAG"
+  DEPENDENCIES:
+    gtk-doc
+    meson
+    gettext-devel
+    gcc
+    redhat-rpm-config
+    gcc-c++
+    glibc-devel
+    systemd
+    sqlite-devel
+    gobject-introspection-devel
+    libgudev-devel
+    libimobiledevice-devel
+    glib2-devel
+    libplist-devel
+    umockdev
+    dbus-x11
+    python3-gobject
+    python3-dbusmock
+    python3-pip
+    python3-packaging
+    git
+    clang
+  LAST_ABI_BREAK: "9058d45685d1c7c08d52fb64c393fed9eeed542b"
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_PIPELINE_SOURCE == 'push'
+    - if: $CI_PIPELINE_SOURCE == 'schedule'
+
+stages:
+  - check-source
+  - build
+  - test
+  - deploy
+
+image: $FEDORA_IMAGE
+
+test_nut_hwdb:
+  stage: check-source
+  except:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  allow_failure: true
+  script:
+    - curl https://raw.githubusercontent.com/networkupstools/nut/master/scripts/upower/95-upower-hid.hwdb >rules/95-upower-hid.hwdb
+    - git diff
+    - "! git status -s | grep -q ."
+
+build:
+  stage: build
+  before_script:
+    - git clone https://gitlab.gnome.org/GNOME/libgudev.git
+    - cd libgudev
+    - dnf install -y 'dnf-command(builddep)'
+    - dnf builddep -y libgudev
+    - meson _build -Dprefix=/usr
+    - ninja -C _build install
+    - cd ..
+  script:
+    - meson _build -Dintrospection=enabled -Dman=true -Dgtk-doc=true -Didevice=enabled
+    - ninja -C _build
+  except:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  # avoid recompiling in test stage
+  artifacts:
+    name: untracked
+    paths:
+     - "${CI_PROJECT_DIR}"
+    expire_in: 3h30min
+
+
+# Compile test the other backends (they don't have extra dependencies currently)
+.build_backend_template: &build_backend
+  stage: build
+  script:
+    - CFLAGS=-DUPOWER_CI_DISABLE_PLATFORM_CODE=1 meson _build -Dos_backend=$backend
+    - ninja -C _build
+  except:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+
+build_dummy:
+  variables:
+    backend: dummy
+  <<: *build_backend
+
+build_freebsd:
+  variables:
+    backend: freebsd
+  <<: *build_backend
+
+build_openbsd:
+  variables:
+    backend: openbsd
+  <<: *build_backend
+
+test:
+  stage: test
+  dependencies:
+   - build
+  before_script:
+    - git clone https://github.com/zatrazz/glibc-tools.git
+    - cd glibc-tools
+    - ./configure
+    - make install
+    - cd ..
+    - git clone https://github.com/martinpitt/umockdev.git
+    - cd umockdev
+    - dnf install -y 'dnf-command(builddep)'
+    - dnf builddep -y umockdev
+    - meson _build -Dprefix=/usr
+    - ninja -C _build install
+    - cd ..
+    - cd libgudev
+    - dnf builddep -y libgudev
+    - meson _build -Dprefix=/usr
+    - ninja -C _build install
+    - cd ..
+  script:
+    - meson _build -Dintrospection=enabled -Dman=true -Dgtk-doc=true -Didevice=enabled
+    - ninja -C _build
+    - catchsegv meson test -C _build --print-errorlogs --no-stdsplit
+    - .ci/fail_skipped_tests.py _build/meson-logs/testlog.junit.xml
+
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - "${CI_PROJECT_DIR}/_build/meson-logs/"
+  except:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+
+check_abi:
+  stage: test
+  before_script:
+    - cd libgudev
+    - dnf install -y 'dnf-command(builddep)'
+    - dnf builddep -y libgudev
+    - meson _build -Dprefix=/usr
+    - ninja -C _build install
+    - cd ..
+  script:
+    - check-abi --suppr .ci/upower.suppr --parameters="-Dman=false -Dgtk-doc=false -Didevice=enabled"  ${LAST_ABI_BREAK} $(git rev-parse HEAD)
+  except:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+
+# Create docs artifact for the website.
+# Note that the last successful artifact build is always kept, so 1 day as
+# expiry is completely fine.
+docs:
+  stage: deploy
+  dependencies:
+   - build
+  script:
+    - meson _build -Dintrospection=enabled -Dman=true -Dgtk-doc=true -Didevice=enabled
+    - ninja -C _build/ UPower-doc
+  artifacts:
+    name: "docs"
+    when: always
+    expire_in: 1 day
+    paths:
+      - "_build/doc/html"
+  only:
+    - master
+  except:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+
+# CONTAINERS creation stage
+container_fedora_build:
+  extends: .fdo.container-build@fedora
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule" && $CRON_TASK == "BUILD_CI_IMAGES"
+  variables:
+    GIT_STRATEGY: none # no need to pull the whole tree for rebuilding the image
+    FDO_FORCE_REBUILD: 1
+    # a list of packages to install
+    FDO_DISTRIBUTION_PACKAGES:
+      $DEPENDENCIES
+    FDO_DISTRIBUTION_EXEC: |
+      curl https://gitlab.freedesktop.org/hadess/check-abi/-/raw/main/contrib/check-abi-fedora.sh | bash

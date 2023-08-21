@@ -146,7 +146,7 @@ method return sender=:1.386 -> dest=:1.477 reply_serial=2
             Refreshes the data collected from the power source.
           </doc:para>
         </doc:description>
-        <doc:permission>Callers need the org.freedesktop.upower.refresh-power-source authorization</doc:permission>
+        <doc:permission>Callers will need to make sure that the daemon was started in debug mode</doc:permission>
         <doc:errors>
           <doc:error name="&ERROR_GENERAL;">if an error occured while refreshing</doc:error>
         </doc:errors>
@@ -472,6 +472,17 @@ method return sender=:1.386 -> dest=:1.477 reply_serial=2
         <doc:description>
           <doc:para>
             Voltage in the Cell or being recorded by the meter.
+          </doc:para>
+        </doc:description>
+      </doc:doc>
+    </property>
+
+    <property name="ChargeCycles" type="i" access="read">
+      <doc:doc>
+        <doc:description>
+          <doc:para>
+            The number of charge cycles as defined by the TCO certification, or -1 if
+            that value is unknown or not applicable.
           </doc:para>
         </doc:description>
       </doc:doc>

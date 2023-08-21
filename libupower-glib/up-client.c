@@ -34,14 +34,14 @@
 #include <stdio.h>
 #include <glib-object.h>
 
-#include "up-client.h"
+#include "upower.h"
 #include "up-daemon-generated.h"
-#include "up-device.h"
 
-static void	up_client_class_init		(UpClientClass	*klass);
-static void	up_client_initable_iface_init	(GInitableIface *iface);
-static void	up_client_init			(UpClient	*client);
-static void	up_client_finalize		(GObject	*object);
+static void	up_client_class_init			(UpClientClass	*klass);
+static void	up_client_initable_iface_init		(GInitableIface *iface);
+static void	up_client_async_initable_iface_init	(GAsyncInitableIface *async_initable_iface);
+static void	up_client_init				(UpClient	*client);
+static void	up_client_finalize			(GObject	*object);
 
 /**
  * UpClientPrivate:
@@ -72,7 +72,8 @@ static guint signals [UP_CLIENT_LAST_SIGNAL] = { 0 };
 
 G_DEFINE_TYPE_WITH_CODE (UpClient, up_client, G_TYPE_OBJECT,
 			 G_ADD_PRIVATE(UpClient)
-                         G_IMPLEMENT_INTERFACE(G_TYPE_INITABLE, up_client_initable_iface_init))
+                         G_IMPLEMENT_INTERFACE(G_TYPE_INITABLE, up_client_initable_iface_init)
+                         G_IMPLEMENT_INTERFACE (G_TYPE_ASYNC_INITABLE, up_client_async_initable_iface_init))
 
 /**
  * up_client_get_devices:
@@ -96,6 +97,41 @@ up_client_get_devices (UpClient *client)
 	return array;
 }
 
+static GPtrArray *
+up_client_get_devices_full (UpClient      *client,
+			    GCancellable  *cancellable,
+			    GError       **error)
+{
+	g_auto(GStrv) devices = NULL;
+	GPtrArray *array;
+	guint i;
+
+	g_return_val_if_fail (UP_IS_CLIENT (client), NULL);
+
+	if (up_exported_daemon_call_enumerate_devices_sync (client->priv->proxy,
+							    &devices,
+							    cancellable,
+							    error) == FALSE) {
+		return NULL;
+	}
+
+	array = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
+
+	for (i = 0; devices[i] != NULL; i++) {
+		g_autoptr(UpDevice) device = NULL;
+		const char *object_path = devices[i];
+		gboolean ret;
+
+		device = up_device_new ();
+		ret = up_device_set_object_path_sync (device, object_path, cancellable, NULL);
+		if (!ret)
+			continue;
+		g_ptr_array_add (array, g_steal_pointer (&device));
+	}
+
+	return array;
+}
+
 /**
  * up_client_get_devices2:
  * @client: a #UpClient instance.
@@ -109,41 +145,80 @@ up_client_get_devices (UpClient *client)
 GPtrArray *
 up_client_get_devices2 (UpClient *client)
 {
-	GError *error = NULL;
-	char **devices;
-	GPtrArray *array;
-	guint i;
+	g_autoptr(GError) error = NULL;
+	GPtrArray *ret = NULL;
 
-	g_return_val_if_fail (UP_IS_CLIENT (client), NULL);
-
-	if (up_exported_daemon_call_enumerate_devices_sync (client->priv->proxy,
-							    &devices,
-							    NULL,
-							    &error) == FALSE) {
-		g_warning ("up_client_get_devices failed: %s", error->message);
-		g_error_free (error);
+	ret = up_client_get_devices_full (client, NULL, &error);
+	if (!ret) {
+		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+			g_warning ("up_client_get_devices failed: %s", error->message);
 		return NULL;
 	}
+	return ret;
+}
 
-	array = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
+static void
+get_devices_async_thread (GTask        *task,
+			  gpointer      source_object,
+			  gpointer      task_data,
+			  GCancellable *cancellable)
+{
+	GError *error = NULL;
+	GPtrArray *array;
 
-	for (i = 0; devices[i] != NULL; i++) {
-		UpDevice *device;
-		const char *object_path = devices[i];
-		gboolean ret;
+	array = up_client_get_devices_full (UP_CLIENT (source_object), cancellable, &error);
+	if (!array)
+		g_task_return_error (task, error);
+	else
+		g_task_return_pointer (task, array, (GDestroyNotify) g_ptr_array_unref);
+}
 
-		device = up_device_new ();
-		ret = up_device_set_object_path_sync (device, object_path, NULL, NULL);
-		if (!ret) {
-			g_object_unref (device);
-			continue;
-		}
+/**
+ * up_client_get_devices_async:
+ * @client: a #UpClient instance.
+ * @cancellable: (nullable): a #GCancellable or %NULL
+ * @callback: a #GAsyncReadyCallback to call when the request is satisfied
+ * @user_data: the data to pass to @callback
+ *
+ * Asynchronously fetches the list of #UpDevice objects.
+ *
+ * Since: 0.99.14
+ **/
+void
+up_client_get_devices_async (UpClient            *client,
+			     GCancellable        *cancellable,
+			     GAsyncReadyCallback  callback,
+			     gpointer             user_data)
+{
+	g_autoptr(GTask) task = NULL;
 
-		g_ptr_array_add (array, device);
-	}
-	g_strfreev (devices);
+	task = g_task_new (client, cancellable, callback, user_data);
+	g_task_set_source_tag (task, (gpointer) G_STRFUNC);
 
-	return array;
+	g_task_run_in_thread (task, get_devices_async_thread);
+}
+
+/**
+ * up_client_get_devices_finish:
+ * @client: a #UpClient instance.
+ * @res: a #GAsyncResult obtained from the #GAsyncReadyCallback passed
+ *     to up_client_get_devices_async()
+ *
+ * Finishes an operation started with up_client_get_devices_async().
+ *
+ * Return value: (element-type UpDevice) (transfer full): an array of
+ *     #UpDevice objects or %NULL on error.
+ **/
+GPtrArray *
+up_client_get_devices_finish (UpClient      *client,
+			      GAsyncResult  *res,
+			      GError       **error)
+{
+  g_return_val_if_fail (UP_IS_CLIENT (client), NULL);
+  g_return_val_if_fail (g_task_is_valid (res, client), NULL);
+  g_return_val_if_fail (error == NULL || *error == NULL, NULL);
+
+  return g_task_propagate_pointer (G_TASK (res), error);
 }
 
 /**
@@ -404,7 +479,7 @@ up_client_class_init (UpClientClass *klass)
 							       "If the laptop lid is closed",
 							       NULL,
 							       FALSE,
-							       G_PARAM_READABLE));
+							       G_PARAM_READABLE | G_PARAM_DEPRECATED));
 	/**
 	 * UpClient:lid-is-present:
 	 *
@@ -418,7 +493,7 @@ up_client_class_init (UpClientClass *klass)
 							       "If a laptop lid is present",
 							       NULL,
 							       FALSE,
-							       G_PARAM_READABLE));
+							       G_PARAM_READABLE | G_PARAM_DEPRECATED));
 
 	/**
 	 * UpClient::device-added:
@@ -557,5 +632,88 @@ up_client_new (void)
 		g_error_free (error);
 	}
 	return client;
+}
+
+static void
+up_client_async_initable_iface_init (GAsyncInitableIface *async_initable_iface)
+{
+  /* Use default */
+}
+
+static void
+up_client_new_async_initable_cb (GObject      *source_object,
+				 GAsyncResult *res,
+				 gpointer      user_data)
+{
+  GTask *task = user_data;
+  GError *error = NULL;
+
+  if (!g_async_initable_init_finish (G_ASYNC_INITABLE (source_object),
+                                     res,
+                                     &error))
+    {
+      g_assert (error != NULL);
+      g_task_return_error (task, error);
+      g_object_unref (source_object);
+    }
+  else
+    {
+      g_task_return_pointer (task, source_object, g_object_unref);
+    }
+  g_object_unref (task);
+}
+
+/**
+ * up_client_new_async:
+ * @cancellable: (nullable): a #GCancellable or %NULL
+ * @callback: a #GAsyncReadyCallback to call when the request is satisfied
+ * @user_data: the data to pass to @callback
+ *
+ * Asynchronously creates a new #UpClient object.
+ *
+ * This is an asynchronous failable function.
+ *
+ * Since: 0.99.14
+ **/
+void
+up_client_new_async (GCancellable        *cancellable,
+		     GAsyncReadyCallback  callback,
+		     gpointer             user_data)
+{
+  UpClient *client;
+  GTask *task;
+
+  task = g_task_new (NULL, cancellable, callback, user_data);
+  g_task_set_source_tag (task, (gpointer) G_STRFUNC);
+
+  client = g_object_new (UP_TYPE_CLIENT, NULL);
+  g_async_initable_init_async (G_ASYNC_INITABLE (client),
+                               G_PRIORITY_DEFAULT,
+                               cancellable,
+                               up_client_new_async_initable_cb,
+                               task);
+}
+
+/**
+ * up_client_new_finish:
+ * @res: a #GAsyncResult obtained from the #GAsyncReadyCallback passed
+ *     to up_client_new_async()
+ * @error: return location for error or %NULL
+ *
+ * Finishes an operation started with up_client_new_async().
+ *
+ * Returns: (transfer full): a #UpClient or %NULL if @error is set.
+ *     Free with g_object_unref().
+ *
+ * Since: 0.99.14
+ **/
+UpClient *
+up_client_new_finish (GAsyncResult  *res,
+		      GError       **error)
+{
+  g_return_val_if_fail (g_task_is_valid (res, NULL), NULL);
+  g_return_val_if_fail (error == NULL || *error == NULL, NULL);
+
+  return g_task_propagate_pointer (G_TASK (res), error);
 }
 

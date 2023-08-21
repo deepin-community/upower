@@ -31,9 +31,10 @@
 #include <gudev/gudev.h>
 
 #include "up-backend.h"
-#include "up-backend-linux-private.h"
 #include "up-daemon.h"
 #include "up-device.h"
+
+#include "up-enumerator-udev.h"
 
 #include "up-device-supply.h"
 #include "up-device-wup.h"
@@ -58,11 +59,13 @@ struct UpBackendPrivate
 	UpDaemon		*daemon;
 	UpDeviceList		*device_list;
 	GUdevClient		*gudev_client;
-	UpDeviceList		*managed_devices;
+	UpInput			*lid_device;
 	UpConfig		*config;
 	GDBusProxy		*logind_proxy;
 	guint                    logind_sleep_id;
 	int                      logind_delay_inhibitor_fd;
+
+	UpEnumerator		*udev_enum;
 
 	/* BlueZ */
 	guint			 bluez_watch_id;
@@ -79,9 +82,6 @@ static guint signals [SIGNAL_LAST] = { 0 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (UpBackend, up_backend, G_TYPE_OBJECT)
 
-static gboolean up_backend_device_add (UpBackend *backend, GUdevDevice *native);
-static void up_backend_device_remove (UpBackend *backend, GUdevDevice *native);
-
 static void
 input_switch_changed_cb (UpInput   *input,
 			 gboolean   switch_value,
@@ -90,213 +90,144 @@ input_switch_changed_cb (UpInput   *input,
 	up_daemon_set_lid_is_closed (backend->priv->daemon, switch_value);
 }
 
-static gpointer
-is_macbook (gpointer data)
-{
-	g_autofree char *product = NULL;
-
-	if (!g_file_get_contents ("/sys/devices/virtual/dmi/id/product_name", &product, NULL, NULL) ||
-	    product == NULL)
-		return GINT_TO_POINTER(FALSE);
-	return GINT_TO_POINTER(g_str_has_prefix (product, "MacBook"));
-}
-
-gboolean
-up_backend_needs_poll_after_uevent (void)
-{
-	static GOnce dmi_once = G_ONCE_INIT;
-	g_once (&dmi_once, is_macbook, NULL);
-	return GPOINTER_TO_INT(dmi_once.retval);
-}
-
-static UpDevice *
-up_backend_device_new (UpBackend *backend, GUdevDevice *native)
-{
-	const gchar *subsys;
-	const gchar *native_path;
-	UpDevice *device = NULL;
-	UpInput *input;
-	gboolean ret;
-
-	subsys = g_udev_device_get_subsystem (native);
-	if (g_strcmp0 (subsys, "power_supply") == 0) {
-
-		/* are we a valid power supply */
-		device = UP_DEVICE (up_device_supply_new ());
-		g_object_set (G_OBJECT(device),
-			      "ignore-system-percentage", GPOINTER_TO_INT (is_macbook (NULL)),
-			      NULL);
-		ret = up_device_coldplug (device, backend->priv->daemon, G_OBJECT (native));
-		if (ret)
-			goto out;
-
-		/* no valid power supply object */
-		g_clear_object (&device);
-
-	} else if (g_strcmp0 (subsys, "tty") == 0) {
-
-		/* see if this is a Watts Up Pro device */
-		device = UP_DEVICE (up_device_wup_new ());
-		ret = up_device_coldplug (device, backend->priv->daemon, G_OBJECT (native));
-		if (ret)
-			goto out;
-
-		/* no valid TTY object */
-		g_clear_object (&device);
-
-	} else if (g_strcmp0 (subsys, "usb") == 0 || g_strcmp0 (subsys, "usbmisc") == 0) {
-
-#ifdef HAVE_IDEVICE
-		/* see if this is an iDevice */
-		device = UP_DEVICE (up_device_idevice_new ());
-		ret = up_device_coldplug (device, backend->priv->daemon, G_OBJECT (native));
-		if (ret)
-			goto out;
-		g_object_unref (device);
-#endif /* HAVE_IDEVICE */
-
-		/* try to detect a HID UPS */
-		device = UP_DEVICE (up_device_hid_new ());
-		ret = up_device_coldplug (device, backend->priv->daemon, G_OBJECT (native));
-		if (ret)
-			goto out;
-
-		/* no valid USB object */
-		g_clear_object (&device);
-
-	} else if (g_strcmp0 (subsys, "input") == 0) {
-
-		/* check input device */
-		input = up_input_new ();
-		ret = up_input_coldplug (input, native);
-		if (ret) {
-			/* we now have a lid */
-			up_daemon_set_lid_is_present (backend->priv->daemon, TRUE);
-			g_signal_connect (G_OBJECT (input), "switch-changed",
-					  G_CALLBACK (input_switch_changed_cb), backend);
-			up_daemon_set_lid_is_closed (backend->priv->daemon,
-						     up_input_get_switch_value (input));
-
-			/* not a power device, add it to the managed devices
-			 * and don't return a power device */
-			up_device_list_insert (backend->priv->managed_devices, G_OBJECT (native), G_OBJECT (input));
-			device = NULL;
-		}
-		g_object_unref (input);
-	} else {
-		native_path = g_udev_device_get_sysfs_path (native);
-		g_warning ("native path %s (%s) ignoring", native_path, subsys);
-	}
-out:
-	return device;
-}
-
-static void
-up_backend_device_changed (UpBackend *backend, GUdevDevice *native)
-{
-	GObject *object;
-	UpDevice *device;
-	gboolean ret;
-
-	/* first, check the device and add it if it doesn't exist */
-	object = up_device_list_lookup (backend->priv->device_list, G_OBJECT (native));
-	if (object == NULL) {
-		g_warning ("treating change event as add on %s", g_udev_device_get_sysfs_path (native));
-		up_backend_device_add (backend, native);
-		goto out;
-	}
-
-	/* need to refresh device */
-	device = UP_DEVICE (object);
-	ret = up_device_refresh_internal (device);
-	if (!ret) {
-		g_debug ("no changes on %s", up_device_get_object_path (device));
-		goto out;
-	}
-out:
-	g_clear_object (&object);
-}
-
-static gboolean
-up_backend_device_add (UpBackend *backend, GUdevDevice *native)
-{
-	GObject *object;
-	UpDevice *device;
-	gboolean ret = TRUE;
-
-	/* does device exist in db? */
-	object = up_device_list_lookup (backend->priv->device_list, G_OBJECT (native));
-	if (object != NULL) {
-		device = UP_DEVICE (object);
-		/* we already have the device; treat as change event */
-		g_warning ("treating add event as change event on %s", up_device_get_object_path (device));
-		up_backend_device_changed (backend, native);
-		goto out;
-	}
-
-	/* get the right sort of device */
-	device = up_backend_device_new (backend, native);
-	if (device == NULL) {
-		ret = FALSE;
-		goto out;
-	}
-
-	/* emit */
-	g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, native, device);
-out:
-	g_clear_object (&object);
-	return ret;
-}
-
-static void
-up_backend_device_remove (UpBackend *backend, GUdevDevice *native)
-{
-	GObject *object;
-	UpDevice *device;
-
-	/* does device exist in db? */
-	object = up_device_list_lookup (backend->priv->device_list, G_OBJECT (native));
-	if (object == NULL) {
-		g_debug ("ignoring remove event on %s", g_udev_device_get_sysfs_path (native));
-		goto out;
-	}
-
-	device = UP_DEVICE (object);
-	/* emit */
-	g_debug ("emitting device-removed: %s", g_udev_device_get_sysfs_path (native));
-	g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, native, device);
-
-out:
-	g_clear_object (&object);
-}
-
 static void
 up_backend_uevent_signal_handler_cb (GUdevClient *client, const gchar *action,
 				      GUdevDevice *device, gpointer user_data)
 {
 	UpBackend *backend = UP_BACKEND (user_data);
+	g_autoptr(UpInput) input = NULL;
 
-	if (g_strcmp0 (action, "add") == 0) {
-		g_debug ("SYSFS add %s", g_udev_device_get_sysfs_path (device));
-		up_backend_device_add (backend, device);
-	} else if (g_strcmp0 (action, "remove") == 0) {
-		g_debug ("SYSFS remove %s", g_udev_device_get_sysfs_path (device));
-		up_backend_device_remove (backend, device);
-	} else if (g_strcmp0 (action, "change") == 0) {
-		g_debug ("SYSFS change %s", g_udev_device_get_sysfs_path (device));
-		up_backend_device_changed (backend, device);
-	} else {
-		g_debug ("unhandled action '%s' on %s", action, g_udev_device_get_sysfs_path (device));
+	if (backend->priv->lid_device)
+		return;
+
+	if (g_strcmp0 (action, "add") != 0)
+		return;
+
+	/* check if the input device is a lid */
+	input = up_input_new ();
+	if (up_input_coldplug (input, device)) {
+		up_daemon_set_lid_is_present (backend->priv->daemon, TRUE);
+		g_signal_connect (G_OBJECT (input), "switch-changed",
+				  G_CALLBACK (input_switch_changed_cb), backend);
+		up_daemon_set_lid_is_closed (backend->priv->daemon,
+					     up_input_get_switch_value (input));
+
+		backend->priv->lid_device = g_steal_pointer (&input);
 	}
 }
 
+static UpDevice *
+find_duplicate_device (UpBackend *backend,
+		       UpDevice  *device)
+{
+	GPtrArray *array;
+	g_autofree char *serial = NULL;
+	UpDevice *ret = NULL;
+	guint i;
+
+	g_object_get (G_OBJECT (device), "serial", &serial, NULL);
+	if (!serial)
+		return NULL;
+
+	array = up_device_list_get_array (backend->priv->device_list);
+	for (i = 0; i < array->len; i++) {
+		g_autofree char *s = NULL;
+		UpDevice *d;
+
+		d = UP_DEVICE (g_ptr_array_index (array, i));
+		if (d == device)
+			continue;
+		g_object_get (G_OBJECT (d), "serial", &s, NULL);
+		if (s && g_ascii_strcasecmp (s, serial) == 0) {
+			ret = g_object_ref (d);
+			break;
+		}
+	}
+	g_ptr_array_unref (array);
+
+	return ret;
+}
+
+/* Returns TRUE if the added_device should be visible */
 static gboolean
-is_battery_iface_proxy (GDBusProxy *interface_proxy)
+update_added_duplicate_device (UpBackend *backend,
+			       UpDevice  *added_device)
+{
+	g_autoptr(UpDevice) other_device = NULL;
+	UpDevice *bluez_device = NULL;
+	UpDevice *unreg_device = NULL;
+	g_autofree char *serial = NULL;
+
+	other_device = find_duplicate_device (backend, added_device);
+	if (!other_device)
+		return TRUE;
+
+	if (UP_IS_DEVICE_BLUEZ (added_device))
+		bluez_device = added_device;
+	else if (UP_IS_DEVICE_BLUEZ (other_device))
+		bluez_device = other_device;
+
+	if (bluez_device) {
+		UpDevice *non_bluez_device;
+
+		non_bluez_device = bluez_device == added_device ?
+			other_device : added_device;
+		g_object_bind_property (bluez_device, "model",
+					non_bluez_device, "model",
+					G_BINDING_SYNC_CREATE);
+		unreg_device = bluez_device;
+	} else {
+		UpDeviceState state;
+		UpDevice *tested_device;
+
+		tested_device = added_device;
+		g_object_get (G_OBJECT (tested_device), "state", &state, NULL);
+		if (state != UP_DEVICE_STATE_UNKNOWN) {
+			tested_device = other_device;
+			g_object_get (G_OBJECT (tested_device), "state", &state, NULL);
+		}
+		if (state != UP_DEVICE_STATE_UNKNOWN) {
+			g_object_get (G_OBJECT (added_device), "serial", &serial, NULL);
+			g_debug ("Device %s is a duplicate, but we don't know if most interesting",
+				 serial);
+			return TRUE;
+		}
+
+		unreg_device = tested_device;
+	}
+
+	g_object_get (G_OBJECT (unreg_device), "serial", &serial, NULL);
+	if (up_device_is_registered (unreg_device)) {
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, unreg_device);
+		up_device_unregister (unreg_device);
+	}
+	g_debug ("Hiding duplicate device %s", serial);
+	return unreg_device != added_device;
+}
+
+static void
+update_removed_duplicate_device (UpBackend *backend,
+				 UpDevice  *removed_device)
+{
+	g_autoptr(UpDevice) other_device = NULL;
+
+	other_device = find_duplicate_device (backend, removed_device);
+	if (!other_device)
+		return;
+
+	/* Re-add the old duplicate device that got hidden */
+	if (up_device_register (other_device))
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, other_device);
+}
+
+static gboolean
+is_interesting_iface_proxy (GDBusProxy *interface_proxy)
 {
 	const char *iface;
 
 	iface = g_dbus_proxy_get_interface_name (interface_proxy);
-	return g_str_equal (iface, "org.bluez.Battery1");
+	return g_str_equal (iface, "org.bluez.Battery1") ||
+		g_str_equal (iface, "org.bluez.Device1");
 }
 
 static gboolean
@@ -323,7 +254,7 @@ bluez_proxies_changed (GDBusObjectManagerClient *manager,
 	GObject *object;
 	UpDeviceBluez *bluez;
 
-	if (!is_battery_iface_proxy (interface_proxy))
+	if (!is_interesting_iface_proxy (interface_proxy))
 		return;
 
 	object = up_device_list_lookup (backend->priv->device_list, G_OBJECT (object_proxy));
@@ -353,7 +284,8 @@ bluez_interface_removed (GDBusObjectManager *manager,
 		return;
 
 	g_debug ("emitting device-removed: %s", g_dbus_object_get_object_path (bus_object));
-	g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, bus_object, UP_DEVICE (object));
+	if (up_device_is_registered (UP_DEVICE (object)))
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, UP_DEVICE (object));
 
 	g_object_unref (object);
 }
@@ -364,10 +296,9 @@ bluez_interface_added (GDBusObjectManager *manager,
 		       GDBusInterface     *interface,
 		       gpointer            user_data)
 {
+	g_autoptr(UpDevice) device = NULL;
 	UpBackend *backend = user_data;
-	UpDevice *device;
 	GObject *object;
-	gboolean ret;
 
 	if (!has_battery_iface (bus_object))
 		return;
@@ -378,15 +309,15 @@ bluez_interface_added (GDBusObjectManager *manager,
 		return;
 	}
 
-	device = UP_DEVICE (up_device_bluez_new ());
-	ret = up_device_coldplug (device, backend->priv->daemon, G_OBJECT (bus_object));
-	if (!ret) {
-		g_object_unref (device);
-		return;
+	device = g_initable_new (UP_TYPE_DEVICE_BLUEZ, NULL, NULL,
+	                         "daemon", backend->priv->daemon,
+	                         "native", G_OBJECT (bus_object),
+	                         NULL);
+	if (device) {
+		g_debug ("emitting device-added: %s", g_dbus_object_get_object_path (bus_object));
+		if (update_added_duplicate_device (backend, device))
+			g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
 	}
-
-	g_debug ("emitting device-added: %s", g_dbus_object_get_object_path (bus_object));
-	g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, bus_object, device);
 }
 
 static void
@@ -465,13 +396,58 @@ bluez_vanished (GDBusConnection *connection,
 
 			object = G_DBUS_OBJECT (up_device_get_native (device));
 			g_debug ("emitting device-removed: %s", g_dbus_object_get_object_path (object));
-			g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, object, UP_DEVICE (object));
+			if (up_device_is_registered (device))
+				g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, device);
 		}
 	}
 
 	g_ptr_array_unref (array);
 
 	g_clear_object (&backend->priv->bluez_client);
+}
+
+static void
+up_device_disconnected_cb (GObject    *gobject,
+			   GParamSpec *pspec,
+			   gpointer    user_data)
+{
+	UpBackend *backend = user_data;
+	g_autofree char *path = NULL;
+	gboolean disconnected;
+
+	g_object_get (gobject,
+		      "native-path", &path,
+		      "disconnected", &disconnected,
+		      NULL);
+	if (disconnected) {
+		g_debug("Device %s became disconnected, hiding device", path);
+		if (up_device_is_registered (UP_DEVICE (gobject))) {
+			g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, gobject);
+			up_device_unregister (UP_DEVICE (gobject));
+		}
+	} else {
+		g_debug ("Device %s became connected, showing device", path);
+		if (up_device_register (UP_DEVICE (gobject)))
+			g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, gobject);
+	}
+}
+
+static void
+udev_device_added_cb (UpBackend *backend, UpDevice *device)
+{
+	g_debug ("Got new device from udev enumerator: %p", device);
+	g_signal_connect (device, "notify::disconnected",
+			  G_CALLBACK (up_device_disconnected_cb), backend);
+	if (update_added_duplicate_device (backend, device))
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
+}
+
+static void
+udev_device_removed_cb (UpBackend *backend, UpDevice *device)
+{
+	g_debug ("Removing device from udev enumerator: %p", device);
+	update_removed_duplicate_device (backend, device);
+	g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, device);
 }
 
 /**
@@ -487,32 +463,24 @@ bluez_vanished (GDBusConnection *connection,
 gboolean
 up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
 {
-	GUdevDevice *native;
-	GList *devices;
+	g_autolist(GUdevDevice) devices = NULL;
 	GList *l;
-	guint i;
-	const gchar *subsystems_wup[] = {"power_supply", "usb", "usbmisc", "tty", "input", NULL};
-	const gchar *subsystems[] = {"power_supply", "usb", "usbmisc", "input", NULL};
 
 	backend->priv->daemon = g_object_ref (daemon);
 	backend->priv->device_list = up_daemon_get_device_list (daemon);
-	if (up_config_get_boolean (backend->priv->config, "EnableWattsUpPro"))
-		backend->priv->gudev_client = g_udev_client_new (subsystems_wup);
-	else
-		backend->priv->gudev_client = g_udev_client_new (subsystems);
+
+	/* Watch udev for input devices to find the lid switch */
+	backend->priv->gudev_client = g_udev_client_new ((const char *[]){ "input", NULL });
 	g_signal_connect (backend->priv->gudev_client, "uevent",
 			  G_CALLBACK (up_backend_uevent_signal_handler_cb), backend);
 
 	/* add all subsystems */
-	for (i=0; subsystems[i] != NULL; i++) {
-		g_debug ("registering subsystem : %s", subsystems[i]);
-		devices = g_udev_client_query_by_subsystem (backend->priv->gudev_client, subsystems[i]);
-		for (l = devices; l != NULL; l = l->next) {
-			native = l->data;
-			up_backend_device_add (backend, native);
-		}
-		g_list_free_full (devices, (GDestroyNotify) g_object_unref);
-	}
+	devices = g_udev_client_query_by_subsystem (backend->priv->gudev_client, "input");
+	for (l = devices; l != NULL; l = l->next)
+		up_backend_uevent_signal_handler_cb (backend->priv->gudev_client,
+						     "add",
+						     G_UDEV_DEVICE (l->data),
+						     backend);
 
 	backend->priv->bluez_watch_id = g_bus_watch_name (G_BUS_TYPE_SYSTEM,
 							  "org.bluez",
@@ -521,6 +489,17 @@ up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
 							  bluez_vanished,
 							  backend,
 							  NULL);
+
+	backend->priv->udev_enum = g_object_new (UP_TYPE_ENUMERATOR_UDEV,
+						 "daemon", daemon,
+						 NULL);
+
+	g_signal_connect_swapped (backend->priv->udev_enum, "device-added",
+				  G_CALLBACK (udev_device_added_cb), backend);
+	g_signal_connect_swapped (backend->priv->udev_enum, "device-removed",
+				  G_CALLBACK (udev_device_removed_cb), backend);
+
+	g_assert (g_initable_init (G_INITABLE (backend->priv->udev_enum), NULL, NULL));
 
 	return TRUE;
 }
@@ -536,10 +515,9 @@ void
 up_backend_unplug (UpBackend *backend)
 {
 	g_clear_object (&backend->priv->gudev_client);
+	g_clear_object (&backend->priv->udev_enum);
 	g_clear_object (&backend->priv->device_list);
-	/* set in init, clear the list to remove reference to UpDaemon */
-	if (backend->priv->managed_devices != NULL)
-		up_device_list_clear (backend->priv->managed_devices, FALSE);
+	g_clear_object (&backend->priv->lid_device);
 	g_clear_object (&backend->priv->daemon);
 	if (backend->priv->bluez_watch_id > 0) {
 		g_bus_unwatch_name (backend->priv->bluez_watch_id);
@@ -741,9 +719,9 @@ up_backend_prepare_for_sleep (GDBusConnection *connection,
 
 	if (will_sleep) {
 		up_daemon_pause_poll (backend->priv->daemon);
-		if (backend->priv->logind_delay_inhibitor_fd > 0) {
+		if (backend->priv->logind_delay_inhibitor_fd >= 0) {
 			close (backend->priv->logind_delay_inhibitor_fd);
-			backend->priv->logind_delay_inhibitor_fd = 0;
+			backend->priv->logind_delay_inhibitor_fd = -1;
 		}
 		return;
 	}
@@ -757,7 +735,7 @@ up_backend_prepare_for_sleep (GDBusConnection *connection,
 
 	for (i = 0; i < array->len; i++) {
 		UpDevice *device = UP_DEVICE (g_ptr_array_index (array, i));
-		up_device_refresh_internal (device);
+		up_device_refresh_internal (device, UP_REFRESH_RESUME);
 	}
 
 	g_ptr_array_unref (array);
@@ -777,13 +755,13 @@ up_backend_class_init (UpBackendClass *klass)
 			      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (UpBackendClass, device_added),
 			      NULL, NULL, NULL,
-			      G_TYPE_NONE, 2, G_TYPE_POINTER, G_TYPE_POINTER);
+			      G_TYPE_NONE, 1, UP_TYPE_DEVICE);
 	signals [SIGNAL_DEVICE_REMOVED] =
 		g_signal_new ("device-removed",
 			      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (UpBackendClass, device_removed),
 			      NULL, NULL, NULL,
-			      G_TYPE_NONE, 2, G_TYPE_POINTER, G_TYPE_POINTER);
+			      G_TYPE_NONE, 1, UP_TYPE_DEVICE);
 }
 
 static void
@@ -794,7 +772,6 @@ up_backend_init (UpBackend *backend)
 
 	backend->priv = up_backend_get_instance_private (backend);
 	backend->priv->config = up_config_new ();
-	backend->priv->managed_devices = up_device_list_new ();
 	backend->priv->logind_proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
 								     0,
 								     NULL,
@@ -851,7 +828,7 @@ up_backend_finalize (GObject *object)
 
 	g_clear_object (&backend->priv->logind_proxy);
 
-	g_object_unref (backend->priv->managed_devices);
+	g_clear_object (&backend->priv->lid_device);
 
 	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
 }
