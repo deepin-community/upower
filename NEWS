@@ -1,3 +1,135 @@
+Version 1.90.2
+--------------
+Released: 2023-07-06
+
+Note that this is the last release of UPower with lid handling. OS components
+that rely on the lid status should get it from logind instead. See:
+https://www.freedesktop.org/software/systemd/man/org.freedesktop.login1.html
+
+- Fix wireless devices not disappearing from Settings when disconnected
+- Require a newer libgudev to avoid bugs related to newline stripping
+  when reading sysfs attributes
+- Add installed-tests files for use with gnome-desktop-testing
+- Fix integration test to work with system installed upower binary and
+  under jhbuild
+
+Version 1.90.1
+--------------
+Released: 2023-07-04
+
+- Detect headsets with kernel batteries such as Logitech and
+  Steelseries headsets, and make them automatically disappear if
+  the headset is turned off (if the kernel driver supports the
+  wireless_status attribute)
+- Hide duplicate Logitech Bluetooth devices (Bolt-compatible devices
+  connected through Bluetooth would show as 2 batteries)
+- Hide duplicate Logitech wireless devices when they get connected
+  through USB as well
+- Fix Bluetooth device names not synchronising, and use user-chosen
+  names when available
+- Handle the "present" sysfs attribute changing
+- Fix iDevices not appearing
+- Fix reading capacity_level with newer libgudev
+- Fix OpenBSD backend
+
+Version 1.90.0
+--------------
+Released: 2022-07-21
+
+Note that the version number bump was made to allow bugfixes for older
+releases while also making new releases that contain with more in-depth
+code changes. The old (soft) API/ABI guarantees are currently unchanged.
+
+Changes:
+- Refactor internal battery handling into separate classes
+- Guess charging/discharging state based on energy rate (#196)
+
+Bug fixes:
+- Fix polling after resume (#198)
+- Fix battery state guessing (#146)
+- Reload history when battery ID changes
+- Test fixes
+
+Version 0.99.19
+---------------
+Released: 2022-06-08
+
+Changes:
+- Move state guessing into DisplayDevice
+- Always use 90% threshold to consider a battery full
+- Various test improvements
+
+Bug fixes:
+- Fix mice showing up as keyboards (#189)
+- Allow unit test inspector to fail (#187)
+- Fix test cases when daemon shuts down too slowly (#188)
+
+Version 0.99.18
+---------------
+Released: 2022-05-17
+
+Changes:
+- Remove broken wakeup DBus API
+- Tag UPS hid devices using hwdb and update list from upstream
+- Only permit Refresh method when in debug mode
+- Refactor device polling
+- Refactor udev device discovery and sibling detection
+- Improved testing and CI
+- Handle SIGTERM to trigger a clean shutdown
+
+Bug fixes:
+- Improve polling of batteries after line-power "online" status change
+- Multiple wacom tablet detection fixes
+- Fix updates after a BT hid power supply moves in sysfs
+- Fix enumeration of "Whats Up!" devices on startup
+- Accept USB power supplies without warning
+- Allow building without gtk-doc
+
+Version 0.99.17
+---------------
+Released: 2022-03-09
+
+Bug fixes:
+- Fix FD handling issues that may cause lid to not be detected
+
+Version 0.99.16
+---------------
+Released: 2022-02-23
+
+Bug fixes:
+- Silence unnecessary udev event warnings
+- Increase test timeout (#171)
+- Explicitly link with plist
+- Fix UpClient reference leak
+- Fix DisplayDevice state on battery hotplug
+- Fix critical action to work after it was cancelled (#172)
+
+Version 0.99.15
+---------------
+Released: 2022-02-09
+
+Bug fixes:
+- Various build fixes
+- Update bluetooth device alias when it changes (#169)
+
+Version 0.99.14
+---------------
+Released: 2022-02-03
+
+Changes:
+- Port build system to meson
+- New ChargeCycles D-Bus property (#152)
+- New async GLib APIs (#121)
+- lid related functions are now deprecated
+- Refresh API is now deprecated
+
+Bug fixes:
+- Plenty of test suite fixes
+- Fix leak of inhibitor lock (#160)
+- Recognize USB power supplies (#148)
+- Fix time compression of data points (#167)
+- Fix disk write amplification when battery is low (#150)
+
 Version 0.99.13
 ---------------
 Released: 2021-08-17

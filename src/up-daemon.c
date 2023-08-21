@@ -19,9 +19,7 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
-#endif
+#include "config.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -40,16 +38,15 @@
 struct UpDaemonPrivate
 {
 	UpConfig		*config;
+	gboolean		 debug;
 	UpBackend		*backend;
 	UpDeviceList		*power_devices;
 	guint			 action_timeout_id;
-	GHashTable		*poll_timeouts;
+	guint			 refresh_batteries_id;
+	guint			 warning_level_id;
 	gboolean                 poll_paused;
-	GHashTable		*idle_signals;
+	GSource                 *poll_source;
 	int			 critical_action_lock_fd;
-
-	/* Properties */
-	UpDeviceLevel		 warning_level;
 
 	/* Display battery properties */
 	UpDevice		*display_device;
@@ -74,8 +71,9 @@ struct UpDaemonPrivate
 
 static void	up_daemon_finalize		(GObject	*object);
 static gboolean	up_daemon_get_on_battery_local	(UpDaemon	*daemon);
-static gboolean	up_daemon_get_warning_level_local(UpDaemon	*daemon);
-static gboolean	up_daemon_get_on_ac_local 	(UpDaemon	*daemon);
+static UpDeviceLevel up_daemon_get_warning_level_local(UpDaemon	*daemon);
+static void	up_daemon_update_warning_level	(UpDaemon	*daemon);
+static gboolean	up_daemon_get_on_ac_local 	(UpDaemon	*daemon, gboolean *has_ac);
 
 G_DEFINE_TYPE_WITH_PRIVATE (UpDaemon, up_daemon, UP_TYPE_EXPORTED_DAEMON_SKELETON)
 
@@ -90,25 +88,8 @@ G_DEFINE_TYPE_WITH_PRIVATE (UpDaemon, up_daemon, UP_TYPE_EXPORTED_DAEMON_SKELETO
 static gboolean
 up_daemon_get_on_battery_local (UpDaemon *daemon)
 {
-	guint i;
-	gboolean ret;
-	gboolean result = FALSE;
-	gboolean on_battery;
-	UpDevice *device;
-	GPtrArray *array;
-
-	/* ask each device */
-	array = up_device_list_get_array (daemon->priv->power_devices);
-	for (i=0; i<array->len; i++) {
-		device = (UpDevice *) g_ptr_array_index (array, i);
-		ret = up_device_get_on_battery (device, &on_battery);
-		if (ret && on_battery) {
-			result = TRUE;
-			break;
-		}
-	}
-	g_ptr_array_unref (array);
-	return result;
+	/* Use the cached composite state cached from the display device */
+	return daemon->priv->state == UP_DEVICE_STATE_DISCHARGING;
 }
 
 /**
@@ -130,7 +111,8 @@ up_daemon_get_number_devices_of_type (UpDaemon *daemon, UpDeviceKind type)
 		g_object_get (device,
 			      "type", &type_tmp,
 			      NULL);
-		if (type == type_tmp)
+		if (type == type_tmp &&
+		    up_device_get_object_path (device) != NULL)
 			count++;
 	}
 	g_ptr_array_unref (array);
@@ -151,7 +133,8 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 	GPtrArray *array;
 
 	UpDeviceKind kind_total = UP_DEVICE_KIND_UNKNOWN;
-	UpDeviceState state_total = UP_DEVICE_STATE_UNKNOWN;
+	/* Abuse LAST to know if any battery had a state. */
+	UpDeviceState state_total = UP_DEVICE_STATE_LAST;
 	gdouble percentage_total = 0.0;
 	gdouble energy_total = 0.0;
 	gdouble energy_full_total = 0.0;
@@ -208,22 +191,35 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 		    power_supply == FALSE)
 			continue;
 
-		/* If one battery is charging, the composite is charging
-		 * If all batteries are discharging or pending-charge, the composite is discharging
-		 * If all batteries are fully charged, the composite is fully charged
+		/*
+		 * If one battery is charging, the composite is charging
+		 * If one batteries is discharging, the composite is discharging
+		 * If one battery is unknown, and we don't have a charging/discharging state otherwise, mark unknown
 		 * If one battery is pending-charge and no other is charging or discharging, then the composite is pending-charge
-		 * Everything else is unknown */
-		if (state == UP_DEVICE_STATE_CHARGING)
+		 * If all batteries are fully charged, the composite is fully charged
+		 * If all batteries are empty, the composite is empty
+		 * Everything else is unknown
+		 */
+		/* Keep a charging/discharging state (warn about conflict) */
+		if (state_total == UP_DEVICE_STATE_CHARGING || state_total == UP_DEVICE_STATE_DISCHARGING) {
+			if (state != state_total && (state == UP_DEVICE_STATE_CHARGING || state == UP_DEVICE_STATE_DISCHARGING))
+				g_warning ("Conflicting charge/discharge state between batteries!");
+		} else if (state == UP_DEVICE_STATE_CHARGING)
 			state_total = UP_DEVICE_STATE_CHARGING;
-		else if (state == UP_DEVICE_STATE_DISCHARGING &&
-			 state_total != UP_DEVICE_STATE_CHARGING)
+		else if (state == UP_DEVICE_STATE_DISCHARGING)
 			state_total = UP_DEVICE_STATE_DISCHARGING;
-		else if (state == UP_DEVICE_STATE_PENDING_CHARGE &&
-			 (state_total == UP_DEVICE_STATE_UNKNOWN || state_total == UP_DEVICE_STATE_PENDING_CHARGE))
+		else if (state == UP_DEVICE_STATE_UNKNOWN)
+			state_total = UP_DEVICE_STATE_UNKNOWN;
+		else if (state == UP_DEVICE_STATE_PENDING_CHARGE)
 			state_total = UP_DEVICE_STATE_PENDING_CHARGE;
 		else if (state == UP_DEVICE_STATE_FULLY_CHARGED &&
-			 state_total == UP_DEVICE_STATE_UNKNOWN)
+			 (state_total == UP_DEVICE_STATE_FULLY_CHARGED || state_total == UP_DEVICE_STATE_LAST))
 			state_total = UP_DEVICE_STATE_FULLY_CHARGED;
+		else if (state == UP_DEVICE_STATE_EMPTY &&
+			 (state_total == UP_DEVICE_STATE_EMPTY || state_total == UP_DEVICE_STATE_LAST))
+			state_total = UP_DEVICE_STATE_EMPTY;
+		else
+			state_total = UP_DEVICE_STATE_UNKNOWN;
 
 		/* sum up composite */
 		kind_total = UP_DEVICE_KIND_BATTERY;
@@ -244,20 +240,48 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 
 	g_debug ("Calculating percentage and time to full/to empty for %i batteries", num_batteries);
 
-	/* use percentage weighted for each battery capacity */
+	/* use percentage weighted for each battery capacity
+	 * fall back to averaging the batteries.
+	 * ASSUMPTION: If one battery has energy data, then all batteries do
+	 */
 	if (energy_full_total > 0.0)
 		percentage_total = 100.0 * energy_total / energy_full_total;
+	else
+		percentage_total = percentage_total / num_batteries;
 
-	/* calculate a quick and dirty time remaining value */
+out:
+	g_ptr_array_unref (array);
+
+	/* No battery means LAST state. If we have an UNKNOWN state (with
+	 * a battery) then try to infer one. */
+	if (state_total == UP_DEVICE_STATE_LAST) {
+		state_total = UP_DEVICE_STATE_UNKNOWN;
+	} else if (state_total == UP_DEVICE_STATE_UNKNOWN) {
+		gboolean has_ac, ac_online;
+
+		ac_online = up_daemon_get_on_ac_local (daemon, &has_ac);
+
+		if (has_ac && ac_online) {
+			if (percentage_total >= UP_FULLY_CHARGED_THRESHOLD)
+				state_total = UP_DEVICE_STATE_FULLY_CHARGED;
+			else
+				state_total = UP_DEVICE_STATE_CHARGING;
+		} else {
+			if (percentage_total < 1.0f)
+				state_total = UP_DEVICE_STATE_EMPTY;
+			else
+				state_total = UP_DEVICE_STATE_DISCHARGING;
+		}
+	}
+
+	/* calculate a quick and dirty time remaining value
+	 * NOTE: Keep in sync with per-battery estimation code! */
 	if (energy_rate_total > 0) {
 		if (state_total == UP_DEVICE_STATE_DISCHARGING)
 			time_to_empty_total = SECONDS_PER_HOUR * (energy_total / energy_rate_total);
 		else if (state_total == UP_DEVICE_STATE_CHARGING)
 			time_to_full_total = SECONDS_PER_HOUR * ((energy_full_total - energy_total) / energy_rate_total);
 	}
-
-out:
-	g_ptr_array_unref (array);
 
 	/* Did anything change? */
 	if (daemon->priv->kind == kind_total &&
@@ -302,10 +326,9 @@ out:
  *
  * As soon as _all_ batteries are low, this is true
  **/
-static gboolean
+static UpDeviceLevel
 up_daemon_get_warning_level_local (UpDaemon *daemon)
 {
-	up_daemon_update_display_battery (daemon);
 	if (daemon->priv->kind != UP_DEVICE_KIND_UPS &&
 	    daemon->priv->kind != UP_DEVICE_KIND_BATTERY)
 		return UP_DEVICE_LEVEL_NONE;
@@ -316,7 +339,7 @@ up_daemon_get_warning_level_local (UpDaemon *daemon)
 
 	/* Check to see if the batteries have not noticed we are on AC */
 	if (daemon->priv->kind == UP_DEVICE_KIND_BATTERY &&
-	    up_daemon_get_on_ac_local (daemon))
+	    up_daemon_get_on_ac_local (daemon, NULL))
 		return UP_DEVICE_LEVEL_NONE;
 
 	return up_daemon_compute_warning_level (daemon,
@@ -333,7 +356,7 @@ up_daemon_get_warning_level_local (UpDaemon *daemon)
  * As soon as _any_ ac supply goes online, this is true
  **/
 static gboolean
-up_daemon_get_on_ac_local (UpDaemon *daemon)
+up_daemon_get_on_ac_local (UpDaemon *daemon, gboolean *has_ac)
 {
 	guint i;
 	gboolean ret;
@@ -342,11 +365,16 @@ up_daemon_get_on_ac_local (UpDaemon *daemon)
 	UpDevice *device;
 	GPtrArray *array;
 
+	if (has_ac)
+		*has_ac = FALSE;
+
 	/* ask each device */
 	array = up_device_list_get_array (daemon->priv->power_devices);
 	for (i=0; i<array->len; i++) {
 		device = (UpDevice *) g_ptr_array_index (array, i);
 		ret = up_device_get_online (device, &online);
+		if (has_ac && ret)
+			*has_ac = TRUE;
 		if (ret && online) {
 			result = TRUE;
 			break;
@@ -356,11 +384,8 @@ up_daemon_get_on_ac_local (UpDaemon *daemon)
 	return result;
 }
 
-/**
- * up_daemon_refresh_battery_devices:
- **/
 static gboolean
-up_daemon_refresh_battery_devices (UpDaemon *daemon)
+up_daemon_refresh_battery_devices_idle (UpDaemon *daemon)
 {
 	guint i;
 	GPtrArray *array;
@@ -380,11 +405,21 @@ up_daemon_refresh_battery_devices (UpDaemon *daemon)
 			      NULL);
 		if (type == UP_DEVICE_KIND_BATTERY &&
 		    power_supply)
-			up_device_refresh_internal (device);
+			up_device_refresh_internal (device, UP_REFRESH_LINE_POWER);
 	}
 	g_ptr_array_unref (array);
 
-	return TRUE;
+	daemon->priv->refresh_batteries_id = 0;
+	return G_SOURCE_REMOVE;
+}
+
+static void
+up_daemon_refresh_battery_devices (UpDaemon *daemon)
+{
+	if (daemon->priv->refresh_batteries_id)
+		return;
+
+	daemon->priv->refresh_batteries_id = g_idle_add ((GSourceFunc) up_daemon_refresh_battery_devices_idle, daemon);
 }
 
 /**
@@ -404,8 +439,11 @@ up_daemon_enumerate_devices (UpExportedDaemon *skeleton,
 	object_paths = g_ptr_array_new_with_free_func (g_free);
 	array = up_device_list_get_array (daemon->priv->power_devices);
 	for (i = 0; i < array->len; i++) {
+		const char *object_path;
 		device = (UpDevice *) g_ptr_array_index (array, i);
-		g_ptr_array_add (object_paths, g_strdup (up_device_get_object_path (device)));
+		object_path = up_device_get_object_path (device);
+		if (object_path != NULL)
+			g_ptr_array_add (object_paths, g_strdup (object_path));
 	}
 	g_ptr_array_unref (array);
 	g_ptr_array_add (object_paths, NULL);
@@ -467,7 +505,7 @@ up_daemon_register_power_daemon (UpDaemon *daemon,
 	}
 
 	/* Register the display device */
-	up_device_register_display_device (daemon->priv->display_device, daemon);
+	g_initable_init (G_INITABLE (daemon->priv->display_device), NULL, NULL);
 
 	return TRUE;
 }
@@ -480,8 +518,6 @@ up_daemon_startup (UpDaemon *daemon,
 		   GDBusConnection *connection)
 {
 	gboolean ret;
-	gboolean on_battery;
-	UpDeviceLevel warning_level;
 	UpDaemonPrivate *priv = daemon->priv;
 
 	/* register on bus */
@@ -501,11 +537,10 @@ up_daemon_startup (UpDaemon *daemon,
 	}
 
 	/* get battery state */
-	on_battery = (up_daemon_get_on_battery_local (daemon) &&
-		      !up_daemon_get_on_ac_local (daemon));
-	warning_level = up_daemon_get_warning_level_local (daemon);
-	up_daemon_set_on_battery (daemon, on_battery);
-	up_daemon_set_warning_level (daemon, warning_level);
+	up_daemon_update_warning_level (daemon);
+
+	/* Run mainloop now to avoid state changes on DBus */
+	while (g_main_context_iteration (NULL, FALSE)) { }
 
 	g_debug ("daemon now not coldplug");
 
@@ -524,11 +559,11 @@ up_daemon_shutdown (UpDaemon *daemon)
 	/* stop accepting new devices and clear backend state */
 	up_backend_unplug (daemon->priv->backend);
 
-	/* forget about discovered devices and release UpDaemon reference */
-	up_device_list_clear (daemon->priv->power_devices, TRUE);
+	/* forget about discovered devices */
+	up_device_list_clear (daemon->priv->power_devices);
 
 	/* release UpDaemon reference */
-	up_device_unplug (daemon->priv->display_device);
+	g_object_run_dispose (G_OBJECT (daemon->priv->display_device));
 }
 
 /**
@@ -609,21 +644,26 @@ take_action_timeout_cb (UpDaemon *daemon)
 void
 up_daemon_set_warning_level (UpDaemon *daemon, UpDeviceLevel warning_level)
 {
-	UpDaemonPrivate *priv = daemon->priv;
+	UpDeviceLevel old_level;
 
-	if (priv->warning_level == warning_level)
+	g_object_get (G_OBJECT (daemon->priv->display_device),
+		      "warning-level", &old_level,
+		      NULL);
+
+	if (old_level == warning_level)
 		return;
 
 	g_debug ("warning_level = %s", up_device_level_to_string (warning_level));
-	priv->warning_level = warning_level;
 
 	g_object_set (G_OBJECT (daemon->priv->display_device),
 		      "warning-level", warning_level,
 		      "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
 		      NULL);
 
-	if (daemon->priv->warning_level == UP_DEVICE_LEVEL_ACTION) {
+	if (warning_level == UP_DEVICE_LEVEL_ACTION) {
 		if (daemon->priv->action_timeout_id == 0) {
+			g_assert (daemon->priv->critical_action_lock_fd == -1);
+
 			g_debug ("About to take action in %d seconds", UP_DAEMON_ACTION_DELAY);
 			daemon->priv->critical_action_lock_fd = up_backend_inhibitor_lock_take (daemon->priv->backend, "Execute critical action", "block");
 			daemon->priv->action_timeout_id = g_timeout_add_seconds (UP_DAEMON_ACTION_DELAY,
@@ -636,7 +676,12 @@ up_daemon_set_warning_level (UpDaemon *daemon, UpDeviceLevel warning_level)
 	} else {
 		if (daemon->priv->action_timeout_id > 0) {
 			g_debug ("Removing timeout as action level changed");
-			g_source_remove (daemon->priv->action_timeout_id);
+			g_clear_handle_id (&daemon->priv->action_timeout_id, g_source_remove);
+		}
+
+		if (daemon->priv->critical_action_lock_fd >= 0) {
+			close (daemon->priv->critical_action_lock_fd);
+			daemon->priv->critical_action_lock_fd = -1;
 		}
 	}
 }
@@ -696,20 +741,32 @@ up_daemon_compute_warning_level (UpDaemon      *daemon,
 	g_assert_not_reached ();
 }
 
-static void
-up_daemon_update_warning_level (UpDaemon *daemon)
+static gboolean
+up_daemon_update_warning_level_idle (UpDaemon *daemon)
 {
 	gboolean ret;
-	UpDaemonPrivate *priv = daemon->priv;
 	UpDeviceLevel warning_level;
 
+	up_daemon_update_display_battery (daemon);
+
 	/* Check if the on_battery and warning_level state has changed */
-	ret = (up_daemon_get_on_battery_local (daemon) && !up_daemon_get_on_ac_local (daemon));
+	ret = (up_daemon_get_on_battery_local (daemon) && !up_daemon_get_on_ac_local (daemon, NULL));
 	up_daemon_set_on_battery (daemon, ret);
 
 	warning_level = up_daemon_get_warning_level_local (daemon);
-	if (warning_level != priv->warning_level)
-		up_daemon_set_warning_level (daemon, warning_level);
+	up_daemon_set_warning_level (daemon, warning_level);
+
+	daemon->priv->warning_level_id = 0;
+	return G_SOURCE_REMOVE;
+}
+
+static void
+up_daemon_update_warning_level (UpDaemon *daemon)
+{
+	if (daemon->priv->warning_level_id)
+		return;
+
+	daemon->priv->warning_level_id = g_idle_add ((GSourceFunc) up_daemon_update_warning_level_idle, daemon);
 }
 
 const gchar *
@@ -753,15 +810,24 @@ static void
 up_daemon_device_changed_cb (UpDevice *device, GParamSpec *pspec, UpDaemon *daemon)
 {
 	UpDeviceKind type;
+	const char *prop;
 
 	g_return_if_fail (UP_IS_DAEMON (daemon));
 	g_return_if_fail (UP_IS_DEVICE (device));
+
+	prop = g_param_spec_get_name (pspec);
+	if (!daemon->priv->poll_paused &&
+	    ((g_strcmp0 (prop, "poll-timeout") == 0) ||
+	     (g_strcmp0 (prop, "last-refresh") == 0))) {
+		g_source_set_ready_time (daemon->priv->poll_source, 0);
+		return;
+	}
 
 	/* refresh battery devices when AC state changes */
 	g_object_get (device,
 		      "type", &type,
 		      NULL);
-	if (type == UP_DEVICE_KIND_LINE_POWER) {
+	if (type == UP_DEVICE_KIND_LINE_POWER && g_strcmp0 (prop, "online") == 0) {
 		/* refresh now */
 		up_daemon_refresh_battery_devices (daemon);
 	}
@@ -769,184 +835,75 @@ up_daemon_device_changed_cb (UpDevice *device, GParamSpec *pspec, UpDaemon *daem
 	up_daemon_update_warning_level (daemon);
 }
 
-typedef struct {
-	guint id;
-	guint timeout;
-	GSourceFunc callback;
-} TimeoutData;
-
-static void
-change_idle_timeout (UpDevice   *device,
-		     GParamSpec *pspec,
-		     gpointer    user_data)
-{
-	TimeoutData *data;
-	GSourceFunc callback;
-	UpDaemon *daemon;
-
-	daemon = up_device_get_daemon (device);
-
-	data = g_hash_table_lookup (daemon->priv->poll_timeouts, device);
-	callback = data->callback;
-
-	up_daemon_stop_poll (G_OBJECT (device));
-	up_daemon_start_poll (G_OBJECT (device), callback);
-	g_object_unref (daemon);
-}
-
-static void
-device_destroyed (gpointer  user_data,
-		  GObject  *where_the_object_was)
-{
-	UpDaemon *daemon = user_data;
-	TimeoutData *data;
-
-	data = g_hash_table_lookup (daemon->priv->poll_timeouts, where_the_object_was);
-	if (data == NULL)
-		return;
-	g_source_remove (data->id);
-	g_hash_table_remove (daemon->priv->poll_timeouts, where_the_object_was);
-}
-
 static gboolean
-fire_timeout_callback (gpointer user_data)
+up_daemon_poll_dispatch (GSource *source, GSourceFunc callback, gpointer user_data)
 {
-	UpDevice *device = user_data;
-	TimeoutData *data;
-	UpDaemon *daemon;
+	UpDaemon *daemon = UP_DAEMON (user_data);
+	UpDaemonPrivate *priv = daemon->priv;
+	g_autoptr(GPtrArray) array = NULL;
+	guint i;
+	UpDevice *device;
+	gint64 ready_time = G_MAXINT64;
+	gint64 now = g_source_get_time (priv->poll_source);
+	gint max_dispatch_timeout = 0;
 
-	daemon = up_device_get_daemon (device);
+	g_source_set_ready_time (priv->poll_source, -1);
+	g_assert (callback == NULL);
 
-	data = g_hash_table_lookup (daemon->priv->poll_timeouts, device);
-	g_assert (data);
+	if (daemon->priv->poll_paused)
+		return G_SOURCE_CONTINUE;
 
-	g_debug ("Firing timeout for '%s' after %u seconds",
-		 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)),
-		 data->timeout);
+	/* Find the earliest device that needs a refresh. */
+	array = up_device_list_get_array (priv->power_devices);
+	for (i = 0; i < array->len; i += 1) {
+		gint timeout;
+		gint64 last_refresh;
+		gint64 poll_time;
+		gint64 dispatch_time;
+		device = (UpDevice *) g_ptr_array_index (array, i);
+		g_object_get (device,
+			      "poll-timeout", &timeout,
+			      "last-refresh", &last_refresh,
+			      NULL);
 
-	/* Fire the actual callback */
-	(data->callback) (device);
-	g_object_unref (daemon);
+		if (timeout <= 0)
+			continue;
+
+		poll_time = last_refresh + timeout * G_USEC_PER_SEC;
+
+		/* Allow dispatching early if another device got dispatched.
+		 * i.e. device polling will synchronize eventually.
+		 */
+		dispatch_time = poll_time - MIN(timeout, max_dispatch_timeout) * G_USEC_PER_SEC / 2;
+
+		if (now >= dispatch_time) {
+			g_debug ("up_daemon_poll_dispatch: refreshing %s", up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
+			up_device_refresh_internal (device, UP_REFRESH_POLL);
+			max_dispatch_timeout = MAX(max_dispatch_timeout, timeout);
+
+			/* We'll wake up again immediately and then
+			 * calculate the correct time to re-poll. */
+		}
+
+		ready_time = MIN(ready_time, poll_time);
+	}
+
+	if (ready_time == G_MAXINT64)
+		ready_time = -1;
+
+	/* Set the ready time (if it was not modified externally) */
+	if (g_source_get_ready_time (priv->poll_source) == -1)
+		g_source_set_ready_time (priv->poll_source, ready_time);
 
 	return G_SOURCE_CONTINUE;
 }
 
-static guint
-calculate_timeout (UpDevice *device)
-{
-	UpDeviceLevel warning_level;
-
-	g_object_get (G_OBJECT (device), "warning-level", &warning_level, NULL);
-	if (warning_level >= UP_DEVICE_LEVEL_DISCHARGING)
-		return UP_DAEMON_SHORT_TIMEOUT;
-	return UP_DAEMON_LONG_TIMEOUT;
-}
-
-static void
-enable_poll_for_device (UpDevice *device, TimeoutData *data)
-{
-	const char *path;
-	guint timeout;
-	char *name;
-
-	path = up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device));
-
-	timeout = calculate_timeout (device);
-	data->timeout = timeout;
-
-	data->id = g_timeout_add_seconds (timeout, fire_timeout_callback, device);
-	name = g_strdup_printf ("[upower] UpDevice::poll for %s (%u secs)",
-				path, timeout);
-	g_source_set_name_by_id (data->id, name);
-	g_free (name);
-}
-
-static void
-enable_warning_level_notifications (UpDaemon *daemon, UpDevice *device)
-{
-	gulong handler_id;
-
-	handler_id = g_signal_connect (device, "notify::warning-level",
-				       G_CALLBACK (change_idle_timeout), NULL);
-	g_hash_table_insert (daemon->priv->idle_signals, device,
-			     GUINT_TO_POINTER (handler_id));
-	g_object_weak_ref (G_OBJECT (device), device_destroyed, daemon);
-}
-
-static void
-disable_warning_level_notifications (UpDaemon *daemon, UpDevice *device)
-{
-	gulong handler_id;
-	gpointer value;
-
-	value = g_hash_table_lookup (daemon->priv->idle_signals, device);
-	if (value == NULL)
-		return;
-
-	handler_id = GPOINTER_TO_UINT (value);
-	if (g_signal_handler_is_connected (device, handler_id))
-		g_signal_handler_disconnect (device, handler_id);
-
-	g_hash_table_remove (daemon->priv->idle_signals, device);
-}
-
-void
-up_daemon_start_poll (GObject     *object,
-		      GSourceFunc  callback)
-{
-	UpDaemon *daemon;
-	UpDevice *device;
-	TimeoutData *data;
-	const char *path;
-
-	device = UP_DEVICE (object);
-	daemon = up_device_get_daemon (device);
-
-	path = up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device));
-
-	if (g_hash_table_lookup (daemon->priv->poll_timeouts, device) != NULL) {
-		g_warning ("Poll already started for device '%s'", path);
-		goto out;
-	}
-
-	data = g_new0 (TimeoutData, 1);
-	data->callback = callback;
-
-	g_hash_table_insert (daemon->priv->poll_timeouts, device, data);
-
-	if (daemon->priv->poll_paused)
-		goto out;
-
-	enable_warning_level_notifications (daemon, device);
-	enable_poll_for_device (device, data);
-
-	g_debug ("Setup poll for '%s' every %u seconds", path, data->timeout);
-out:
-	g_object_unref (daemon);
-}
-
-void
-up_daemon_stop_poll (GObject *object)
-{
-	UpDevice *device;
-	TimeoutData *data;
-	UpDaemon *daemon;
-
-	device = UP_DEVICE (object);
-	daemon = up_device_get_daemon (device);
-
-	disable_warning_level_notifications (daemon, device);
-
-	data = g_hash_table_lookup (daemon->priv->poll_timeouts, device);
-	if (data == NULL)
-		goto out;
-
-	g_source_remove (data->id);
-	g_object_weak_unref (object, device_destroyed, daemon);
-	g_hash_table_remove (daemon->priv->poll_timeouts, device);
-out:
-	g_object_unref (daemon);
-}
+GSourceFuncs poll_source_funcs = {
+	.prepare = NULL,
+	.check = NULL,
+	.dispatch = up_daemon_poll_dispatch,
+	.finalize = NULL,
+};
 
 /**
  * up_daemon_pause_poll:
@@ -957,27 +914,9 @@ out:
 void
 up_daemon_pause_poll (UpDaemon *daemon)
 {
-	GHashTableIter iter;
-	gpointer key, value;
-
 	g_debug ("Polling will be paused");
 
 	daemon->priv->poll_paused = TRUE;
-
-	g_hash_table_iter_init (&iter, daemon->priv->poll_timeouts);
-	while (g_hash_table_iter_next (&iter, &key, &value)) {
-		UpDevice *device = key;
-		TimeoutData *data = value;
-
-		if (data->id != 0) {
-			g_source_remove (data->id);
-			data->id = 0;
-		}
-
-		disable_warning_level_notifications (daemon, device);
-
-		g_debug ("Poll paused '%s'", up_device_get_object_path (device));
-	}
 }
 
 /**
@@ -988,41 +927,40 @@ up_daemon_pause_poll (UpDaemon *daemon)
 void
 up_daemon_resume_poll (UpDaemon *daemon)
 {
-	GHashTableIter iter;
-	gpointer key, value;
-
 	g_debug ("Polling will be resumed");
 
-	g_hash_table_iter_init (&iter, daemon->priv->poll_timeouts);
-	while (g_hash_table_iter_next (&iter, &key, &value)) {
-		UpDevice *device = key;
-		TimeoutData *data = value;
-
-		enable_poll_for_device (device, data);
-		enable_warning_level_notifications (daemon, device);
-
-		g_debug ("Poll resumed for '%s' every %u seconds",
-			 up_device_get_object_path (device), data->timeout);
-	}
-
 	daemon->priv->poll_paused = FALSE;
+
+	g_source_set_ready_time (daemon->priv->poll_source, 0);
+}
+
+void
+up_daemon_set_debug (UpDaemon *daemon,
+		     gboolean  debug)
+{
+	daemon->priv->debug = debug;
+}
+
+gboolean
+up_daemon_get_debug (UpDaemon *daemon)
+{
+	return daemon->priv->debug;
 }
 
 /**
  * up_daemon_device_added_cb:
  **/
 static void
-up_daemon_device_added_cb (UpBackend *backend, GObject *native, UpDevice *device, UpDaemon *daemon)
+up_daemon_device_added_cb (UpBackend *backend, UpDevice *device, UpDaemon *daemon)
 {
 	const gchar *object_path;
 	UpDaemonPrivate *priv = daemon->priv;
 
 	g_return_if_fail (UP_IS_DAEMON (daemon));
 	g_return_if_fail (UP_IS_DEVICE (device));
-	g_return_if_fail (G_IS_OBJECT (native));
 
 	/* add to device list */
-	up_device_list_insert (priv->power_devices, native, G_OBJECT (device));
+	up_device_list_insert (priv->power_devices, device);
 
 	/* connect, so we get changes */
 	g_signal_connect (device, "notify",
@@ -1030,13 +968,17 @@ up_daemon_device_added_cb (UpBackend *backend, GObject *native, UpDevice *device
 
 	/* emit */
 	object_path = up_device_get_object_path (device);
-	g_debug ("emitting added: %s", object_path);
-
-	/* don't crash the session */
 	if (object_path == NULL) {
-		g_warning ("INTERNAL STATE CORRUPT (device-added): not sending NULL, native:%p, device:%p", native, device);
+		g_debug ("Device %s was unregistered before it was on the bus",
+			 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
 		return;
 	}
+
+	/* Ensure we poll the new device if needed */
+	g_source_set_ready_time (daemon->priv->poll_source, 0);
+
+	g_debug ("emitting added: %s", object_path);
+	up_daemon_update_warning_level (daemon);
 	up_exported_daemon_emit_device_added (UP_EXPORTED_DAEMON (daemon), object_path);
 }
 
@@ -1044,31 +986,30 @@ up_daemon_device_added_cb (UpBackend *backend, GObject *native, UpDevice *device
  * up_daemon_device_removed_cb:
  **/
 static void
-up_daemon_device_removed_cb (UpBackend *backend, GObject *native, UpDevice *device, UpDaemon *daemon)
+up_daemon_device_removed_cb (UpBackend *backend, UpDevice *device, UpDaemon *daemon)
 {
 	const gchar *object_path;
 	UpDaemonPrivate *priv = daemon->priv;
 
 	g_return_if_fail (UP_IS_DAEMON (daemon));
 	g_return_if_fail (UP_IS_DEVICE (device));
-	g_return_if_fail (G_IS_OBJECT (native));
 
-	/* remove from list */
-	up_device_list_remove (priv->power_devices, G_OBJECT(device));
+	g_signal_handlers_disconnect_by_data (device, daemon);
+
+	/* remove from list (device remains valid during the function call) */
+	up_device_list_remove (priv->power_devices, device);
 
 	/* emit */
 	object_path = up_device_get_object_path (device);
-	g_debug ("emitting device-removed: %s", object_path);
 
 	/* don't crash the session */
 	if (object_path == NULL) {
-		g_warning ("INTERNAL STATE CORRUPT (device-removed): not sending NULL, native:%p, device:%p", native, device);
+		g_debug ("not emitting device-removed for unregistered device: %s",
+			 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
 		return;
 	}
+	g_debug ("emitting device-removed: %s", object_path);
 	up_exported_daemon_emit_device_removed (UP_EXPORTED_DAEMON (daemon), object_path);
-
-	/* finalise the object */
-	g_object_unref (device);
 
 	/* In case a battery was removed */
 	up_daemon_refresh_battery_devices (daemon);
@@ -1124,9 +1065,18 @@ static void
 up_daemon_init (UpDaemon *daemon)
 {
 	daemon->priv = up_daemon_get_instance_private (daemon);
+
+	daemon->priv->critical_action_lock_fd = -1;
 	daemon->priv->config = up_config_new ();
 	daemon->priv->power_devices = up_device_list_new ();
-	daemon->priv->display_device = up_device_new ();
+	daemon->priv->display_device = up_device_new (daemon, NULL);
+	daemon->priv->poll_source = g_source_new (&poll_source_funcs, sizeof (GSource));
+
+	g_source_set_callback (daemon->priv->poll_source, NULL, daemon, NULL);
+	g_source_set_name (daemon->priv->poll_source, "up-device-poll");
+	g_source_attach (daemon->priv->poll_source, NULL);
+	/* g_source_destroy removes the last reference */
+	g_source_unref (daemon->priv->poll_source);
 
 	daemon->priv->use_percentage_for_policy = up_config_get_boolean (daemon->priv->config, "UsePercentageForPolicy");
 	load_percentage_policy (daemon, FALSE);
@@ -1138,10 +1088,6 @@ up_daemon_init (UpDaemon *daemon)
 			  G_CALLBACK (up_daemon_device_added_cb), daemon);
 	g_signal_connect (daemon->priv->backend, "device-removed",
 			  G_CALLBACK (up_daemon_device_removed_cb), daemon);
-
-	daemon->priv->poll_timeouts = g_hash_table_new_full (g_direct_hash, g_direct_equal,
-							     NULL, g_free);
-	daemon->priv->idle_signals = g_hash_table_new (g_direct_hash, g_direct_equal);
 
 	up_exported_daemon_set_daemon_version (UP_EXPORTED_DAEMON (daemon), PACKAGE_VERSION);
 
@@ -1193,16 +1139,16 @@ up_daemon_finalize (GObject *object)
 	UpDaemon *daemon = UP_DAEMON (object);
 	UpDaemonPrivate *priv = daemon->priv;
 
-	if (priv->action_timeout_id != 0)
-		g_source_remove (priv->action_timeout_id);
+	g_clear_handle_id (&priv->action_timeout_id, g_source_remove);
+	g_clear_handle_id (&priv->refresh_batteries_id, g_source_remove);
+	g_clear_handle_id (&priv->warning_level_id, g_source_remove);
 
 	if (priv->critical_action_lock_fd >= 0) {
 		close (priv->critical_action_lock_fd);
 		priv->critical_action_lock_fd = -1;
 	}
 
-	g_clear_pointer (&priv->poll_timeouts, g_hash_table_destroy);
-	g_clear_pointer (&priv->idle_signals, g_hash_table_destroy);
+	g_clear_pointer (&daemon->priv->poll_source, g_source_destroy);
 
 	g_object_unref (priv->power_devices);
 	g_object_unref (priv->display_device);

@@ -1,0 +1,84 @@
+From 029651a96dfc8e8e1dc6eca79bd3bf23d3aeb5ce Mon Sep 17 00:00:00 2001
+From: Pino Toscano <toscano.pino@tiscali.it>
+Date: Thu, 6 Jul 2023 07:17:01 +0200
+Subject: [PATCH] build: make 'udevrulesdir' and 'udevhwdbdir' as Linux-only
+
+udev is available only on Linux, so limit their usage when the backend
+is 'linux'.
+
+This fixes the build when the backend is different than 'linux', i.e.
+typically on non-Linux OSes.
+---
+ meson.build       | 22 +++++++++++-----------
+ rules/meson.build | 18 ++++++++++--------
+ 2 files changed, 21 insertions(+), 19 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index fed3f85..6e398a2 100644
+--- a/meson.build
++++ b/meson.build
+@@ -81,23 +81,23 @@ if os_backend == 'linux'
+     endif
+     cdata.set10('HAVE_IDEVICE', true)
+   endif
+-endif
+ 
+-historydir = get_option('historydir')
+-if historydir == ''
+-    historydir = get_option('prefix') / get_option('localstatedir') / 'lib' / 'upower'
+-endif
+-
+-udevrulesdir = get_option('udevrulesdir')
+-if udevrulesdir == 'auto'
++  udevrulesdir = get_option('udevrulesdir')
++  if udevrulesdir == 'auto'
+     udev_dep = dependency('udev', required: true)
+     udevrulesdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'rules.d'
+-endif
++  endif
+ 
+-udevhwdbdir = get_option('udevhwdbdir')
+-if udevhwdbdir == 'auto'
++  udevhwdbdir = get_option('udevhwdbdir')
++  if udevhwdbdir == 'auto'
+     udev_dep = dependency('udev', required: true)
+     udevhwdbdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'hwdb.d'
++  endif
++endif
++
++historydir = get_option('historydir')
++if historydir == ''
++    historydir = get_option('prefix') / get_option('localstatedir') / 'lib' / 'upower'
+ endif
+ 
+ dbusdir = get_option('datadir') / 'dbus-1'
+diff --git a/rules/meson.build b/rules/meson.build
+index 63c344c..b780bb2 100644
+--- a/rules/meson.build
++++ b/rules/meson.build
+@@ -7,12 +7,14 @@ hwdb = [
+     '95-upower-hid.hwdb',
+ ]
+ 
+-install_data(
+-    rules,
+-    install_dir: udevrulesdir,
+-)
++if os_backend == 'linux'
++    install_data(
++        rules,
++        install_dir: udevrulesdir,
++    )
+ 
+-install_data(
+-    hwdb,
+-    install_dir: udevhwdbdir,
+-)
++    install_data(
++        hwdb,
++        install_dir: udevhwdbdir,
++    )
++endif
+-- 
+2.40.1
+

@@ -18,9 +18,7 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
-#endif
+#include "config.h"
 
 #include <gio/gio.h>
 
@@ -185,7 +183,7 @@ up_device_bluez_coldplug (UpDevice *device)
 	}
 
 	v = g_dbus_proxy_get_cached_property (proxy, "Appearance");
-	if (v) {
+	if (v && g_variant_get_uint16 (v) != 0) {
 		guint16 appearance;
 
 		appearance = g_variant_get_uint16 (v);
@@ -270,10 +268,14 @@ up_device_bluez_update (UpDeviceBluez *bluez,
 				      "percentage", (gdouble) g_variant_get_byte (value),
 				      "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
 				      NULL);
+		} else if (g_str_equal (key, "Alias")) {
+			g_object_set (device,
+				      "model", g_variant_get_string (value, NULL),
+				      NULL);
 		} else {
 			char *str = g_variant_print (value, TRUE);
 
-			g_warning ("Unhandled key: %s value: %s", key, str);
+			g_debug ("Unhandled key: %s value: %s", key, str);
 			g_free (str);
 		}
 		g_variant_unref (value);
@@ -287,10 +289,3 @@ up_device_bluez_class_init (UpDeviceBluezClass *klass)
 
 	device_class->coldplug = up_device_bluez_coldplug;
 }
-
-UpDeviceBluez *
-up_device_bluez_new (void)
-{
-	return g_object_new (UP_TYPE_DEVICE_BLUEZ, NULL);
-}
-

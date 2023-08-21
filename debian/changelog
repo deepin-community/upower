@@ -1,8 +1,168 @@
-upower (0.99.13-1) UNRELEASED; urgency=medium
+upower (1.90.2-4) unstable; urgency=medium
 
-  * update
+  [ Pino Toscano ]
+  * Make the upower-tests package as linux-any
 
- -- Utopia Maintenance Team <pkg-utopia-maintainers@lists.alioth.debian.org>  Sat, 11 Jun 2022 13:38:16 +0800
+  [ Michael Biebl ]
+  * Switch debian-branch to debian/master
+  * Exclude .device files in /usr/libexec/upower/tests/ from dh_fixperms
+  * Add python3 Depends to upower-tests
+  * Upload to unstable (Closes: #1042914)
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 03 Aug 2023 14:24:33 +0200
+
+upower (1.90.2-3) experimental; urgency=medium
+
+  [ Pino Toscano ]
+  * Make it build again on non-Linux architectures:
+    - backport upstream commit 029651a96dfc8e8e1dc6eca79bd3bf23d3aeb5ce to
+      install the udev files only on Linux
+    - d/rules: tweak the meson parameters to install the systemd files only
+      on Linux
+    - d/upower.install: restrict the systemd files only to Linux
+
+  [ Michael Biebl ]
+  * Bump Standards-Version to 4.6.2
+
+ -- Michael Biebl <biebl@debian.org>  Tue, 11 Jul 2023 19:39:42 +0200
+
+upower (1.90.2-2) experimental; urgency=medium
+
+  * Bump Build-Depends on libgudev-1.0-dev to (>= 238) (Closes: #1040642)
+  * Add new upower-tests package.
+    Update autopkgtest to use upower-tests for the integration test.
+
+ -- Michael Biebl <biebl@debian.org>  Sat, 08 Jul 2023 20:44:42 +0200
+
+upower (1.90.2-1) experimental; urgency=medium
+
+  * New upstream version 1.90.2
+  * Drop patches, merged upstream
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 06 Jul 2023 15:14:44 +0200
+
+upower (1.90.1-1) experimental; urgency=medium
+
+  * New upstream version 1.90.1
+  * Use patch-numbers=False for gbp-pq
+  * linux: Fix integration test to work with system installed upower binary
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 05 Jul 2023 17:50:42 +0200
+
+upower (1.90.0-2) experimental; urgency=medium
+
+  * Recommend polkitd instead of the transitional policykit-1
+    (Closes: #1025587)
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 07 Dec 2022 13:28:24 +0100
+
+upower (1.90.0-1) experimental; urgency=medium
+
+  * New upstream version 1.90.0
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 31 Aug 2022 20:35:58 +0200
+
+upower (0.99.20-2) unstable; urgency=medium
+
+  * Recommend polkitd instead of the transitional policykit-1
+    (Closes: #1025587)
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 07 Dec 2022 13:24:05 +0100
+
+upower (0.99.20-1) unstable; urgency=medium
+
+  * New upstream version 0.99.20
+  * Drop patches, applied upstream
+  * Use dh-sequence-gir Build-Depends to enable the gir addon
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 13 Jul 2022 18:39:40 +0200
+
+upower (0.99.19-1) unstable; urgency=medium
+
+  * New upstream version 0.99.19
+  * test: Properly wait for idle handler after uevents
+  * Bump Standards-Version to 4.6.1
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 09 Jun 2022 16:24:10 +0200
+
+upower (0.99.18-3) unstable; urgency=medium
+
+  * test: Disable systemd v251 sysfs verification
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 26 May 2022 18:49:55 +0200
+
+upower (0.99.18-2) unstable; urgency=medium
+
+  * Increase shutdown timeout in integration test
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 19 May 2022 17:59:52 +0200
+
+upower (0.99.18-1) unstable; urgency=medium
+
+  * New upstream version 0.99.18
+  * Update Build-Depends on meson and libglib2.0-dev as per meson.build
+  * meson: Allow unittest inspector to fail
+  * Install new udev hwdb file
+  * Remove wakeup symbols from libupower-glib3.symbols.
+    Strictly speaking, the removal of the wakeup API constitutes an API/ABI
+    break and the soname of the library should have been bumped. As upower
+    appears to be the only user of that API though, it should be relatively
+    safe without an explicit soname bump.
+    To ensure that both upower and gir1.2-upowerglib-1.0 are upgraded along
+    with libupower-glib3, add versioned Breaks against those packages to
+    libupower-glib3.
+  * Tighten dependency between upower and libupower-glib3.
+    As the server uses internal symbols from libupower-glib, ensure that
+    both packages are always upgraded in lock-step.
+
+ -- Michael Biebl <biebl@debian.org>  Tue, 17 May 2022 17:35:30 +0200
+
+upower (0.99.17-1) unstable; urgency=medium
+
+  * New upstream version 0.99.17
+  * Drop patches, all applied upstream
+  * Remove unnecessary version constraints
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 09 Mar 2022 19:59:13 +0100
+
+upower (0.99.16-2) unstable; urgency=medium
+
+  * Cherry-pick FD handling fixes from upstream (Closes: #1006368)
+
+ -- Michael Biebl <biebl@debian.org>  Sat, 26 Feb 2022 10:43:19 +0100
+
+upower (0.99.16-1) unstable; urgency=medium
+
+  * New upstream version 0.99.16
+    - Silence unnecessary udev event warnings (Closes: #989512)
+  * Enable all hardening build flags
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 23 Feb 2022 20:48:18 +0100
+
+upower (0.99.15-1) unstable; urgency=medium
+
+  * New upstream version 0.99.15
+  * Drop patches, all merged upstream
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 09 Feb 2022 18:11:55 +0100
+
+upower (0.99.14-2) unstable; urgency=medium
+
+  * Cherry-pick more build related fixes from upstream
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 07 Feb 2022 23:12:15 +0100
+
+upower (0.99.14-1) unstable; urgency=medium
+
+  * New upstream version 0.99.14
+  * Switch to Meson build system
+  * Cherry-pick Meson fixes from upstream
+  * Update symbols file for libupower-glib3
+  * Drop up_exported_kbd_backlight_* symbols
+  * Extend upower-doc description a bit
+  * Fix upstream-system autopkgtest
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 07 Feb 2022 20:47:39 +0100
 
 upower (0.99.13-1) unstable; urgency=medium
 

@@ -29,7 +29,9 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
+#ifndef UPOWER_CI_DISABLE_PLATFORM_CODE
 #include <dev/acpica/acpiio.h>
+#endif
 
 #include <glib.h>
 #include <glib/gstdio.h>
@@ -37,51 +39,25 @@
 #include <glib/gi18n-lib.h>
 #include <glib-object.h>
 
+#include "up-common.h"
+
 #include "up-acpi-native.h"
 #include "up-util.h"
 
-#include "up-types.h"
+#include "up-common.h"
 #include "up-device-supply.h"
 
 #define UP_ACPIDEV			"/dev/acpi"
 
 G_DEFINE_TYPE (UpDeviceSupply, up_device_supply, UP_TYPE_DEVICE)
 
-static gboolean		 up_device_supply_refresh	 	(UpDevice *device);
-static UpDeviceTechnology	up_device_supply_convert_device_technology (const gchar *type);
+static gboolean		 up_device_supply_refresh	 	(UpDevice *device, UpRefreshReason reason);
 static gboolean		up_device_supply_acline_coldplug	(UpDevice *device);
 static gboolean		up_device_supply_battery_coldplug	(UpDevice *device, UpAcpiNative *native);
 static gboolean		up_device_supply_acline_set_properties	(UpDevice *device);
 static gboolean		up_device_supply_battery_set_properties	(UpDevice *device, UpAcpiNative *native);
 static gboolean		up_device_supply_get_on_battery	(UpDevice *device, gboolean *on_battery);
 static gboolean		up_device_supply_get_online		(UpDevice *device, gboolean *online);
-
-/**
- * up_device_supply_convert_device_technology:
- *
- * This is taken from linux/up-device-supply.c.
- **/
-static UpDeviceTechnology
-up_device_supply_convert_device_technology (const gchar *type)
-{
-	if (type == NULL)
-		return UP_DEVICE_TECHNOLOGY_UNKNOWN;
-	if (g_ascii_strcasecmp (type, "li-ion") == 0 ||
-	    g_ascii_strcasecmp (type, "lion") == 0)
-		return UP_DEVICE_TECHNOLOGY_LITHIUM_ION;
-	if (g_ascii_strcasecmp (type, "pb") == 0 ||
-	    g_ascii_strcasecmp (type, "pbac") == 0)
-		return UP_DEVICE_TECHNOLOGY_LEAD_ACID;
-	if (g_ascii_strcasecmp (type, "lip") == 0 ||
-	    g_ascii_strcasecmp (type, "lipo") == 0 ||
-	    g_ascii_strcasecmp (type, "li-poly") == 0)
-		return UP_DEVICE_TECHNOLOGY_LITHIUM_POLYMER;
-	if (g_ascii_strcasecmp (type, "nimh") == 0)
-		return UP_DEVICE_TECHNOLOGY_NICKEL_METAL_HYDRIDE;
-	if (g_ascii_strcasecmp (type, "lifo") == 0)
-		return UP_DEVICE_TECHNOLOGY_LITHIUM_IRON_PHOSPHATE;
-	return UP_DEVICE_TECHNOLOGY_UNKNOWN;
-}
 
 /**
  * up_device_supply_reset_values:
@@ -155,6 +131,7 @@ up_device_supply_battery_coldplug (UpDevice *device, UpAcpiNative *native)
 static gboolean
 up_device_supply_battery_set_properties (UpDevice *device, UpAcpiNative *native)
 {
+#ifndef UPOWER_CI_DISABLE_PLATFORM_CODE
 	gint fd;
 	gdouble volt, dvolt, rate, lastfull, cap, dcap, lcap, capacity;
 	gboolean is_present;
@@ -201,10 +178,10 @@ up_device_supply_battery_set_properties (UpDevice *device, UpAcpiNative *native)
 		goto end;
 	}
 
-	vendor = up_make_safe_string (battif.bif.oeminfo);
-	model = up_make_safe_string (battif.bif.model);
-	serial = up_make_safe_string (battif.bif.serial);
-	technology = up_device_supply_convert_device_technology (battif.bif.type);
+	vendor = up_make_safe_string (g_strdup (battif.bif.oeminfo));
+	model = up_make_safe_string (g_strdup (battif.bif.model));
+	serial = up_make_safe_string (g_strdup (battif.bif.serial));
+	technology = up_convert_device_technology (battif.bif.type);
 
 	g_object_set (device,
 		      "vendor", vendor,
@@ -317,6 +294,9 @@ up_device_supply_battery_set_properties (UpDevice *device, UpAcpiNative *native)
 end:
 	close (fd);
 	return ret;
+#else
+	return FALSE;
+#endif
 }
 
 /**
@@ -325,12 +305,14 @@ end:
 static gboolean
 up_device_supply_acline_set_properties (UpDevice *device)
 {
+#ifndef UPOWER_CI_DISABLE_PLATFORM_CODE
 	int acstate;
 
 	if (up_get_int_sysctl (&acstate, NULL, "hw.acpi.acline")) {
 		g_object_set (device, "online", acstate ? TRUE : FALSE, NULL);
 		return TRUE;
 	}
+#endif
 
 	return FALSE;
 }
@@ -379,7 +361,7 @@ out:
  * Return %TRUE on success, %FALSE if we failed to refresh or no data
  **/
 static gboolean
-up_device_supply_refresh (UpDevice *device)
+up_device_supply_refresh (UpDevice *device, UpRefreshReason reason)
 {
 	GObject *object;
 	UpDeviceKind type;
@@ -472,7 +454,6 @@ up_device_supply_init (UpDeviceSupply *supply)
 static void
 up_device_supply_class_init (UpDeviceSupplyClass *klass)
 {
-	GObjectClass *object_class = G_OBJECT_CLASS (klass);
 	UpDeviceClass *device_class = UP_DEVICE_CLASS (klass);
 
 	device_class->get_on_battery = up_device_supply_get_on_battery;
@@ -480,13 +461,3 @@ up_device_supply_class_init (UpDeviceSupplyClass *klass)
 	device_class->coldplug = up_device_supply_coldplug;
 	device_class->refresh = up_device_supply_refresh;
 }
-
-/**
- * up_device_supply_new:
- **/
-UpDeviceSupply *
-up_device_supply_new (void)
-{
-	return g_object_new (UP_TYPE_DEVICE_SUPPLY, NULL);
-}
-

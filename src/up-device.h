@@ -28,43 +28,38 @@
 G_BEGIN_DECLS
 
 #define UP_TYPE_DEVICE		(up_device_get_type ())
-#define UP_DEVICE(o)	   	(G_TYPE_CHECK_INSTANCE_CAST ((o), UP_TYPE_DEVICE, UpDevice))
-#define UP_DEVICE_CLASS(k)	(G_TYPE_CHECK_CLASS_CAST((k), UP_TYPE_DEVICE, UpDeviceClass))
-#define UP_IS_DEVICE(o)	(G_TYPE_CHECK_INSTANCE_TYPE ((o), UP_TYPE_DEVICE))
-#define UP_IS_DEVICE_CLASS(k)  (G_TYPE_CHECK_CLASS_TYPE ((k), UP_TYPE_DEVICE))
-#define UP_DEVICE_GET_CLASS(o) (G_TYPE_INSTANCE_GET_CLASS ((o), UP_TYPE_DEVICE, UpDeviceClass))
 
-typedef struct UpDevicePrivate UpDevicePrivate;
+G_DECLARE_DERIVABLE_TYPE (UpDevice, up_device, UP, DEVICE, UpExportedDeviceSkeleton)
 
-typedef struct
-{
-	UpExportedDeviceSkeleton parent;
-	UpDevicePrivate	*priv;
-} UpDevice;
+typedef enum {
+	UP_REFRESH_INIT,
+	UP_REFRESH_POLL,
+	UP_REFRESH_RESUME,
+	UP_REFRESH_EVENT,
+	UP_REFRESH_LINE_POWER,
+} UpRefreshReason;
 
-typedef struct
+struct _UpDeviceClass
 {
 	UpExportedDeviceSkeletonClass parent_class;
 
 	/* vtable */
 	gboolean	 (*coldplug)		(UpDevice	*device);
-	gboolean	 (*refresh)		(UpDevice	*device);
+	void		 (*sibling_discovered)	(UpDevice	*device,
+						 GObject	*sibling);
+	gboolean	 (*refresh)		(UpDevice	*device,
+						 UpRefreshReason reason);
 	const gchar	*(*get_id)		(UpDevice	*device);
 	gboolean	 (*get_on_battery)	(UpDevice	*device,
 						 gboolean	*on_battery);
 	gboolean	 (*get_online)		(UpDevice	*device,
 						 gboolean	*online);
-} UpDeviceClass;
+};
 
 GType		 up_device_get_type		(void);
-UpDevice	*up_device_new			(void);
-
-gboolean	 up_device_coldplug		(UpDevice	*device,
-						 UpDaemon	*daemon,
+UpDevice	*up_device_new			(UpDaemon	*daemon,
 						 GObject	*native);
-void		 up_device_unplug		(UpDevice	*device);
-gboolean	 up_device_register_display_device (UpDevice	*device,
-						    UpDaemon	*daemon);
+
 UpDaemon	*up_device_get_daemon		(UpDevice	*device);
 GObject		*up_device_get_native		(UpDevice	*device);
 const gchar	*up_device_get_object_path	(UpDevice	*device);
@@ -72,7 +67,13 @@ gboolean	 up_device_get_on_battery	(UpDevice	*device,
 						 gboolean	*on_battery);
 gboolean	 up_device_get_online		(UpDevice	*device,
 						 gboolean	*online);
-gboolean	 up_device_refresh_internal	(UpDevice	*device);
+void		 up_device_sibling_discovered	(UpDevice	*device,
+						 GObject	*sibling);
+gboolean	 up_device_refresh_internal	(UpDevice	*device,
+						 UpRefreshReason reason);
+void		 up_device_unregister		(UpDevice	*device);
+gboolean	 up_device_register		(UpDevice	*device);
+gboolean	 up_device_is_registered	(UpDevice	*device);
 
 G_END_DECLS
 

@@ -89,6 +89,7 @@ enum {
 	PROP_WARNING_LEVEL,
 	PROP_BATTERY_LEVEL,
 	PROP_ICON_NAME,
+	PROP_CHARGE_CYCLES,
 	PROP_LAST
 };
 
@@ -346,6 +347,12 @@ up_device_to_text (UpDevice *device)
 		if (up_exported_device_get_voltage (priv->proxy_device) > 0)
 			g_string_append_printf (string, "    voltage:             %g V\n", up_exported_device_get_voltage (priv->proxy_device));
 	}
+	if (kind == UP_DEVICE_KIND_BATTERY) {
+		if (up_exported_device_get_charge_cycles (priv->proxy_device) > 0)
+			g_string_append_printf (string, "    charge-cycles:       %d\n", up_exported_device_get_charge_cycles (priv->proxy_device));
+		else
+			g_string_append_printf (string, "    charge-cycles:       %s\n", "N/A");
+	}
 	if (kind == UP_DEVICE_KIND_KEYBOARD) {
 		if (up_exported_device_get_luminosity (priv->proxy_device) > 0)
 			g_string_append_printf (string, "    luminosity:          %g lx\n", up_exported_device_get_luminosity (priv->proxy_device));
@@ -401,7 +408,8 @@ up_device_to_text (UpDevice *device)
  * @error: a #GError, or %NULL.
  *
  * Refreshes properties on the device.
- * This function is normally not required.
+ * This function is normally not required and will only return without
+ * an error if the daemon was started in debug mode.
  *
  * Return value: #TRUE for success, else #FALSE and @error is used
  *
@@ -681,6 +689,9 @@ up_device_set_property (GObject *object, guint prop_id, const GValue *value, GPa
 	case PROP_ICON_NAME:
 		up_exported_device_set_icon_name (device->priv->proxy_device, g_value_get_string (value));
 		break;
+	case PROP_CHARGE_CYCLES:
+		up_exported_device_set_charge_cycles (device->priv->proxy_device, g_value_get_int (value));
+		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -794,6 +805,9 @@ up_device_get_property (GObject *object, guint prop_id, GValue *value, GParamSpe
 		break;
 	case PROP_ICON_NAME:
 		g_value_set_string (value, up_exported_device_get_icon_name (device->priv->proxy_device));
+		break;
+	case PROP_CHARGE_CYCLES:
+		g_value_set_int (value, up_exported_device_get_charge_cycles (device->priv->proxy_device));
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1197,6 +1211,20 @@ up_device_class_init (UpDeviceClass *klass)
 					 g_param_spec_string ("icon-name",
 							      NULL, NULL, NULL,
 							      G_PARAM_READWRITE));
+
+	/**
+	 * UpDevice:charge-cycles:
+	 *
+	 * The number of charge cycles for the battery, or -1 if unknown
+	 * or non-applicable.
+	 *
+	 * Since: 1.0
+	 **/
+	g_object_class_install_property (object_class,
+					 PROP_CHARGE_CYCLES,
+					 g_param_spec_int ("charge-cycles",
+							   NULL, NULL,
+							   -1, G_MAXINT, -1, G_PARAM_READWRITE));
 }
 
 static void
@@ -1230,6 +1258,12 @@ up_device_finalize (GObject *object)
 	g_return_if_fail (UP_IS_DEVICE (object));
 
 	device = UP_DEVICE (object);
+
+	if (device->priv->proxy_device != NULL) {
+		g_signal_handlers_disconnect_by_func (device->priv->proxy_device,
+						      up_device_changed_cb,
+						      device);
+	}
 
 	g_clear_object (&device->priv->proxy_device);
 	g_clear_pointer (&device->priv->offline_props, g_hash_table_unref);
