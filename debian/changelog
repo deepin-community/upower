@@ -1,3 +1,47 @@
+upower (1.90.3-1) unstable; urgency=medium
+
+  * New upstream version 1.90.3
+  * Drop patches, merged upstream
+  * Bump Build-Depends on meson to (>= 0.60.0) and libglib2.0-dev to (>= 2.66)
+    as per meson.build
+  * Switch Build-Depends on pkg-config to pkgconf
+  * Bump Standards-Version to 4.7.0
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 08 Apr 2024 09:42:45 +0200
+
+upower (1.90.2-8) unstable; urgency=medium
+
+  * Adjust test_bluetooth_le_device for dbusmock 0.30.1.
+    Patch taken from upstream master. (Closes: #1059467)
+
+ -- Martin Pitt <mpitt@debian.org>  Fri, 29 Dec 2023 06:59:41 +0100
+
+upower (1.90.2-7) unstable; urgency=medium
+
+  * Replace udev Build-Depends with systemd-dev.
+    The new systemd-dev package ships udev.pc, which is used to get
+    udevrulesdir and udevhwdbdir.
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 20 Nov 2023 23:31:32 +0100
+
+upower (1.90.2-6) unstable; urgency=medium
+
+  * Move systemd services files and udev rules/hwdb files to /usr.
+    Add a corresponding versioned Build-Depends on debhelper (>= 13.11.6) to
+    ensure we have a recent enough dh_installsystemd.
+
+ -- Michael Biebl <biebl@debian.org>  Sat, 21 Oct 2023 14:24:44 +0200
+
+upower (1.90.2-5) unstable; urgency=medium
+
+  * Remove __pycache__ directories in 'clean' target via debian/clean.
+    (Closes: #1048444)
+  * Ignore autopkgtest failure on i386.
+    This is a workaround until #1050436 has been addressed properly to allow
+    migration to testing.
+
+ -- Michael Biebl <biebl@debian.org>  Fri, 29 Sep 2023 11:30:18 +0200
+
 upower (1.90.2-4) unstable; urgency=medium
 
   [ Pino Toscano ]

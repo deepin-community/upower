@@ -7,7 +7,7 @@ Depends: upower-tests,
          gir1.2-umockdev-1.0,
          umockdev,
          gnome-desktop-testing
-Restrictions: allow-stderr
+Restrictions: allow-stderr, skippable
 
 Tests: build
 Depends: libupower-glib-dev,
