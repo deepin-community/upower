@@ -5,7 +5,10 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 include /usr/share/dpkg/architecture.mk
 
 ifeq (linux,$(DEB_HOST_ARCH_OS))
-EXTRA_MESON_ARGS += -Dsystemdsystemunitdir=/lib/systemd/system
+EXTRA_MESON_ARGS += \
+	-Dsystemdsystemunitdir=/usr/lib/systemd/system \
+	-Dudevrulesdir=/usr/lib/udev/rules.d \
+	-Dudevhwdbdir=/usr/lib/udev/hwdb.d
 else
 EXTRA_MESON_ARGS += -Dsystemdsystemunitdir=no
 endif

@@ -200,7 +200,7 @@ class Tests(dbusmock.DBusTestCase):
         env['SYSTEMD_DEVICE_VERIFY_SYSFS'] = '0'
         self.daemon_log = OutputChecker()
 
-        if os.getenv('VALGRIND') != None:
+        if os.getenv('VALGRIND') is not None:
             daemon_path = ['valgrind', self.daemon_path, '-v', '-r']
         else:
             daemon_path = [self.daemon_path, '-v', '-r']
@@ -610,7 +610,7 @@ class Tests(dbusmock.DBusTestCase):
         energy_now = 48000000
         ac = self.testbed.add_device('power_supply', 'AC', None,
                                      ['type', 'Mains', 'online', '0'], [])
-        bat0 = self.testbed.add_device('power_supply', f'BAT0', None,
+        bat0 = self.testbed.add_device('power_supply', 'BAT0', None,
                                        ['type', 'Battery',
                                         'present', '1',
                                         'status', 'unknown',
@@ -1296,7 +1296,7 @@ class Tests(dbusmock.DBusTestCase):
 
         self.start_daemon()
 
-        self.daemon_log.check_line(f"using id: Fake_Battery-80-001", timeout=1)
+        self.daemon_log.check_line("using id: Fake_Battery-80-001", timeout=1)
 
         # Change the serial of the battery
         self.testbed.set_attribute(bat0, 'energy_full_design', '90000000')
@@ -1304,19 +1304,19 @@ class Tests(dbusmock.DBusTestCase):
         self.testbed.uevent(bat0, 'change')
 
         # This saves the old history, and then opens a new one
-        self.daemon_log.check_line_re(f"saved .*/history-time-empty-Fake_Battery-80-001.dat", timeout=1)
-        self.daemon_log.check_line(f"using id: Fake_Battery-90-002", timeout=1)
+        self.daemon_log.check_line_re("saved .*/history-time-empty-Fake_Battery-80-001.dat", timeout=1)
+        self.daemon_log.check_line("using id: Fake_Battery-90-002", timeout=1)
 
         # Only happens once
-        self.daemon_log.check_no_line(f"using id:", wait=1.0)
+        self.daemon_log.check_no_line("using id:", wait=1.0)
 
         # Remove the battery
         self.testbed.set_attribute(bat0, 'present', '0')
         self.testbed.uevent(bat0, 'change')
 
         # This saves the old history, and does *not* open a new one
-        self.daemon_log.check_line_re(f"saved .*/history-time-empty-Fake_Battery-90-002.dat", timeout=1)
-        self.daemon_log.check_no_line(f"using id:", wait=1.0)
+        self.daemon_log.check_line_re("saved .*/history-time-empty-Fake_Battery-90-002.dat", timeout=1)
+        self.daemon_log.check_no_line("using id:", wait=1.0)
 
         self.stop_daemon()
 
@@ -2162,7 +2162,9 @@ class Tests(dbusmock.DBusTestCase):
 
         alias = 'Satechi M1 Mouse'
         battery_level = 99
-        device_properties = None
+        device_properties = {
+            'Class': dbus.UInt32(0, variant_level=1)
+        }
 
         devs = self._add_bluez_battery_device(alias, device_properties, battery_level)
         self.assertEqual(len(devs), 1)
@@ -2643,6 +2645,60 @@ class Tests(dbusmock.DBusTestCase):
                 'IsRechargeable': True,
             }
         })
+
+        self.stop_daemon()
+
+    def test_ignore_unknown_power_supply_type(self):
+        '''
+        Ignore devices with unknown power supply type and doesn't look like a charger.
+        '''
+
+        # Sample data taken from Fairphone 4, running Linux kernel 4.19 w/
+        # vendor patches (abbreviated).
+
+        # Actual battery.
+        battery = self.testbed.add_device('power_supply', 'battery', None,
+                ['capacity', '77',
+                 'charging_enabled', '1',
+                 'health', 'Good',
+                 'present', '1',
+                 'status', 'Charging',
+                 'technology', 'Li-ion',
+                 'type', 'Battery',
+                 'voltage_max', '4400000',
+                 'voltage_now', '4268584'], [])
+
+        # BMS (should be ignored)
+        bms = self.testbed.add_device('power_supply', 'bms', None,
+                ['type', 'BMS',
+                 'capacity', '77',
+                 'capacity_raw', '7685',
+                 'current_avg', '-1677247',
+                 'current_now', '-1543885',
+                 'power_avg', '29886557',
+                 'power_now', '52842898',
+                 'real_capacity', '77',
+                 'temp', '300',
+                 'voltage_avg', '4322887',
+                 'voltage_max', '4400000',
+                 'voltage_min', '3400000',
+                 'voltage_now', '4298363',
+                 'voltage_ocv', '4102200'], [])
+
+        # "Charge pump master" (not sure what it is either, should be ignored)
+        charge_pump_master = self.testbed.add_device(
+            'power_supply', 'charge_pump_master', None,
+                ['chip_version', '3',
+                 'min_icl', '1000000',
+                 'model_name', 'SMB1398_V2',
+                 'parallel_mode', '1',
+                 'parallel_output_mode', '2',
+                 'type', 'Nothing attached'], [])
+
+        self.start_daemon(warns=True)
+        devs = self.proxy.EnumerateDevices()
+        # Only the battery should be listed, not the BMS or charge pump master.
+        self.assertEqual(len(devs), 1)
 
         self.stop_daemon()
 

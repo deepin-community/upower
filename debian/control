@@ -5,22 +5,23 @@ Maintainer: Utopia Maintenance Team <pkg-utopia-maintainers@lists.alioth.debian.
 Uploaders: Michael Biebl <biebl@debian.org>,
            Martin Pitt <mpitt@debian.org>,
 Build-Depends: debhelper-compat (= 13),
+               debhelper (>= 13.11.6),
                dh-sequence-gir,
                dh-exec,
-               meson (>= 0.56.0),
+               meson (>= 0.60.0),
                gobject-introspection,
                gtk-doc-tools,
                gettext (>= 0.19.8),
                libgirepository1.0-dev,
-               libglib2.0-dev (>= 2.58),
+               libglib2.0-dev (>= 2.66),
                libgudev-1.0-dev (>= 238) [linux-any],
                libimobiledevice-dev (>= 0.9.7) [linux-any],
                libkvm-dev [kfreebsd-any],
-               pkg-config,
-               udev [linux-any],
+               pkgconf,
+               systemd-dev [linux-any],
                xsltproc,
 Build-Depends-Indep: libglib2.0-doc <!nodoc>,
-Standards-Version: 4.6.2
+Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Vcs-Git: https://salsa.debian.org/utopia-team/upower.git
 Vcs-Browser: https://salsa.debian.org/utopia-team/upower/

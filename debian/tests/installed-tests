@@ -2,4 +2,10 @@
 
 set -eu
 
-gnome-desktop-testing-runner upower
+if [ "$(dpkg --print-architecture)" = i386 ]; then
+    # i386 is known buggy atm, see #1050436
+    # run the test anyway but mark it as skippable on failures
+    gnome-desktop-testing-runner upower || return 77
+else
+    gnome-desktop-testing-runner upower
+fi
