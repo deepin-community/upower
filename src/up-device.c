@@ -183,6 +183,19 @@ ensure_history (UpDevice *device)
 		up_history_set_id (priv->history, id);
 }
 
+static gboolean
+up_device_history_filter (UpDevice *device, UpHistory *history)
+{
+	UpExportedDevice *skeleton = UP_EXPORTED_DEVICE (device);
+
+	if (up_exported_device_get_state (skeleton) == UP_DEVICE_STATE_UNKNOWN) {
+		g_debug ("device %s has unknown state, not saving history",
+			   up_exported_device_get_native_path (skeleton));
+		return FALSE;
+	}
+	return TRUE;
+}
+
 static void
 update_history (UpDevice *device)
 {
@@ -190,6 +203,9 @@ update_history (UpDevice *device)
 	UpExportedDevice *skeleton = UP_EXPORTED_DEVICE (device);
 
 	ensure_history (device);
+
+	if (!up_device_history_filter (device, priv->history))
+		return;
 
 	/* save new history */
 	up_history_set_state (priv->history, up_exported_device_get_state (skeleton));
@@ -214,12 +230,16 @@ up_device_notify (GObject *object, GParamSpec *pspec)
 	if (g_strcmp0 (pspec->name, "type") == 0 ||
 	    g_strcmp0 (pspec->name, "is-present") == 0) {
 		update_icon_name (device);
-		/* Clearing the history object will force lazily loading. */
-		g_clear_object (&priv->history);
+		/* Clearing the history object for lazily loading when device id was changed. */
+		if (priv->history != NULL &&
+		    !up_history_is_device_id_equal (priv->history, up_device_get_id(device)))
+			g_clear_object (&priv->history);
 	} else if (g_strcmp0 (pspec->name, "vendor") == 0 ||
 		   g_strcmp0 (pspec->name, "model") == 0 ||
 		   g_strcmp0 (pspec->name, "serial") == 0) {
-		g_clear_object (&priv->history);
+		if (priv->history != NULL &&
+		    !up_history_is_device_id_equal (priv->history, up_device_get_id(device)))
+			g_clear_object (&priv->history);
 	} else if (g_strcmp0 (pspec->name, "power-supply") == 0 ||
 		   g_strcmp0 (pspec->name, "time-to-empty") == 0) {
 		update_warning_level (device);

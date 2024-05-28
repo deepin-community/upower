@@ -1,12 +1,12 @@
 project('upower', 'c',
-    version: '1.90.2',
+    version: '1.90.3',
     license: 'GPLv2+',
     default_options: [
         'buildtype=debugoptimized',
         'warning_level=1',
         'c_std=gnu99',
     ],
-    meson_version: '>= 0.56.0')
+    meson_version: '>= 0.60.0')
 
 soversion = 3
 current = 1
@@ -30,7 +30,7 @@ cdata.set_quoted('PACKAGE_VERSION', meson.project_version())
 cdata.set_quoted('VERSION', meson.project_version())
 cdata.set_quoted('PACKAGE_SYSCONF_DIR', get_option('sysconfdir'))
 
-glib_min_version = '2.58'
+glib_min_version = '2.66'
 
 glib_version_def = 'GLIB_VERSION_@0@_@1@'.format(
     glib_min_version.split('.')[0], glib_min_version.split('.')[1])
@@ -81,23 +81,23 @@ if os_backend == 'linux'
     endif
     cdata.set10('HAVE_IDEVICE', true)
   endif
+
+  udevrulesdir = get_option('udevrulesdir')
+  if udevrulesdir == 'auto'
+    udev_dep = dependency('udev', required: true)
+    udevrulesdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'rules.d'
+  endif
+
+  udevhwdbdir = get_option('udevhwdbdir')
+  if udevhwdbdir == 'auto'
+    udev_dep = dependency('udev', required: true)
+    udevhwdbdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'hwdb.d'
+  endif
 endif
 
 historydir = get_option('historydir')
 if historydir == ''
     historydir = get_option('prefix') / get_option('localstatedir') / 'lib' / 'upower'
-endif
-
-udevrulesdir = get_option('udevrulesdir')
-if udevrulesdir == 'auto'
-    udev_dep = dependency('udev', required: true)
-    udevrulesdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'rules.d'
-endif
-
-udevhwdbdir = get_option('udevhwdbdir')
-if udevhwdbdir == 'auto'
-    udev_dep = dependency('udev', required: true)
-    udevhwdbdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'hwdb.d'
 endif
 
 dbusdir = get_option('datadir') / 'dbus-1'
