@@ -1,0 +1,22 @@
+Index: deepin-upower/etc/UPower.conf
+===================================================================
+--- deepin-upower.orig/etc/UPower.conf	2025-10-10 14:42:30.957610205 +0800
++++ deepin-upower/etc/UPower.conf	2025-10-10 14:57:35.635792402 +0800
+@@ -64,7 +64,7 @@
+ # PercentageAction=2
+ PercentageLow=20
+ PercentageCritical=5
+-PercentageAction=2
++PercentageAction=0
+ 
+ # When UsePercentageForPolicy is false, the time remaining in seconds at
+ # which UPower will consider the battery low, critical, or take action for
+@@ -79,7 +79,7 @@
+ # TimeAction=120
+ TimeLow=1200
+ TimeCritical=300
+-TimeAction=120
++TimeAction=10
+ 
+ # The action to take when "TimeAction" or "PercentageAction" above has been
+ # reached for the batteries (UPS or laptop batteries) supplying the computer

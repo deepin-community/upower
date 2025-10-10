@@ -1,3 +1,10 @@
+upower (1.90.3-1deepin1) unstable; urgency=medium
+
+  * Patch: uniontech-not-action.patch 
+  * Description: Disable upower's critical power action to allow external control.
+
+ -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 10 Oct 2025 14:58:14 +0800
+
 upower (1.90.3-1) unstable; urgency=medium
 
   * New upstream version 1.90.3
