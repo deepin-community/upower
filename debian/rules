@@ -21,6 +21,7 @@ override_dh_auto_configure:
 		-Dman=true \
 		-Dgtk-doc=true \
 		-Dintrospection=enabled \
+		-Dpolkit=enabled \
 		$(EXTRA_MESON_ARGS)
 
 override_dh_auto_test:

@@ -66,6 +66,9 @@ libupower-glib.so.3 libupower-glib3 #MINVER#
  (optional)up_exported_daemon_set_on_battery@Base 0.99.4
  (optional)up_exported_daemon_skeleton_get_type@Base 0.99.4
  (optional)up_exported_daemon_skeleton_new@Base 0.99.4
+ (optional)up_exported_device_call_enable_charge_threshold@Base 1.90.5
+ (optional)up_exported_device_call_enable_charge_threshold_finish@Base 1.90.5
+ (optional)up_exported_device_call_enable_charge_threshold_sync@Base 1.90.5
  (optional)up_exported_device_call_get_history@Base 0.99.4
  (optional)up_exported_device_call_get_history_finish@Base 0.99.4
  (optional)up_exported_device_call_get_history_sync@Base 0.99.4
@@ -75,6 +78,7 @@ libupower-glib.so.3 libupower-glib3 #MINVER#
  (optional)up_exported_device_call_refresh@Base 0.99.4
  (optional)up_exported_device_call_refresh_finish@Base 0.99.4
  (optional)up_exported_device_call_refresh_sync@Base 0.99.4
+ (optional)up_exported_device_complete_enable_charge_threshold@Base 1.90.5
  (optional)up_exported_device_complete_get_history@Base 0.99.4
  (optional)up_exported_device_complete_get_statistics@Base 0.99.4
  (optional)up_exported_device_complete_refresh@Base 0.99.4
@@ -86,6 +90,10 @@ libupower-glib.so.3 libupower-glib3 #MINVER#
  (optional)up_exported_device_get_battery_level@Base 0.99.5
  (optional)up_exported_device_get_capacity@Base 0.99.4
  (optional)up_exported_device_get_charge_cycles@Base 0.99.14
+ (optional)up_exported_device_get_charge_end_threshold@Base 1.90.5
+ (optional)up_exported_device_get_charge_start_threshold@Base 1.90.5
+ (optional)up_exported_device_get_charge_threshold_enabled@Base 1.90.5
+ (optional)up_exported_device_get_charge_threshold_supported@Base 1.90.5
  (optional)up_exported_device_get_energy@Base 0.99.4
  (optional)up_exported_device_get_energy_empty@Base 0.99.4
  (optional)up_exported_device_get_energy_full@Base 0.99.4
@@ -126,6 +134,10 @@ libupower-glib.so.3 libupower-glib3 #MINVER#
  (optional)up_exported_device_set_battery_level@Base 0.99.5
  (optional)up_exported_device_set_capacity@Base 0.99.4
  (optional)up_exported_device_set_charge_cycles@Base 0.99.14
+ (optional)up_exported_device_set_charge_end_threshold@Base 1.90.5
+ (optional)up_exported_device_set_charge_start_threshold@Base 1.90.5
+ (optional)up_exported_device_set_charge_threshold_enabled@Base 1.90.5
+ (optional)up_exported_device_set_charge_threshold_supported@Base 1.90.5
  (optional)up_exported_device_set_energy@Base 0.99.4
  (optional)up_exported_device_set_energy_empty@Base 0.99.4
  (optional)up_exported_device_set_energy_full@Base 0.99.4

@@ -1,2 +1,4 @@
 version=4
-https://gitlab.freedesktop.org/upower/upower/tags?sort=updated_desc archive/v@ANY_VERSION@/upower-v\d\S*@ARCHIVE_EXT@
+opts="searchmode=plain" \
+https://gitlab.freedesktop.org/@PACKAGE@/@PACKAGE@/tags?sort=updated_desc \
+ -/archive/v[\d.]+/@PACKAGE@@ANY_VERSION@@ARCHIVE_EXT@

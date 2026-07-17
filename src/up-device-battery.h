@@ -32,7 +32,12 @@ G_DECLARE_DERIVABLE_TYPE (UpDeviceBattery, up_device_battery, UP, DEVICE_BATTERY
 
 struct _UpDeviceBatteryClass
 {
-  UpDeviceClass parent_class;
+	UpDeviceClass parent_class;
+
+	gboolean	(* set_battery_charge_thresholds) (UpDevice  *device,
+							   guint      start,
+							   guint      end,
+							   GError   **error);
 };
 
 typedef enum {
@@ -84,6 +89,12 @@ typedef struct {
 	UpDeviceTechnology technology;
 	gdouble voltage_design;
 	gint charge_cycles;
+
+	/* battery charging threshold */
+	gboolean charge_control_enabled;
+	gboolean charge_control_supported;
+	guint charge_control_start_threshold;
+	guint charge_control_end_threshold;
 } UpBatteryInfo;
 
 

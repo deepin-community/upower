@@ -553,24 +553,38 @@ up_backend_get_critical_action (UpBackend *backend)
 		const gchar *method;
 		const gchar *can_method;
 	} actions[] = {
+		{ "Suspend", "CanSuspend" },
 		{ "HybridSleep", "CanHybridSleep" },
 		{ "Hibernate", "CanHibernate" },
 		{ "PowerOff", NULL },
+		{ "Ignore", NULL },
 	};
-	guint i = 0;
-	char *action;
+	g_autofree gchar *action = NULL;
+	gboolean can_risky = FALSE;
+	guint i = 1;
 
 	g_return_val_if_fail (backend->priv->logind_proxy != NULL, NULL);
 
-	/* Find the configured action first */
+	can_risky = up_config_get_boolean (backend->priv->config,
+					   "AllowRiskyCriticalPowerAction");
+
+	/* find the configured action first */
 	action = up_config_get_string (backend->priv->config, "CriticalPowerAction");
+
+	/* safeguard for the risky actions */
+	if (!can_risky) {
+		if (!g_strcmp0 (action, "Suspend") || !g_strcmp0 (action, "Ignore")) {
+			g_free (action);
+			action = g_strdup_printf ("HybridSleep");
+		}
+	}
+
 	if (action != NULL) {
 		for (i = 0; i < G_N_ELEMENTS (actions); i++)
 			if (g_str_equal (actions[i].method, action))
 				break;
 		if (i >= G_N_ELEMENTS (actions))
-			i = 0;
-		g_free (action);
+			i = 1;
 	}
 
 	for (; i < G_N_ELEMENTS (actions); i++) {
@@ -613,6 +627,12 @@ up_backend_take_action (UpBackend *backend)
 
 	/* Take action */
 	g_debug ("About to call logind method %s", method);
+
+	/* Do nothing if the action is set to "Ignore" */
+	if (g_strcmp0 (method, "Ignore") == 0) {
+		return;
+	}
+
 	g_dbus_proxy_call (backend->priv->logind_proxy,
 			   method,
 			   g_variant_new ("(b)", FALSE),
@@ -843,4 +863,3 @@ up_backend_new (void)
 {
 	return g_object_new (UP_TYPE_BACKEND, NULL);
 }
-

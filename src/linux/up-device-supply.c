@@ -107,6 +107,10 @@ up_device_supply_reset_values (UpDeviceSupply *supply)
 		      "temperature", (gdouble) 0.0,
 		      "technology", UP_DEVICE_TECHNOLOGY_UNKNOWN,
 		      "charge-cycles", -1,
+		      "charge-start-threshold", 0,
+		      "charge-end-threshold", 100,
+		      "charge-threshold-enabled", FALSE,
+		      "charge-threshold-supported", FALSE,
 		      NULL);
 }
 
@@ -329,6 +333,7 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 {
 	GUdevDevice *input;
 	UpDeviceKind cur_type, new_type;
+	const gchar *new_model_name = NULL;
 	char *model_name;
 	char *serial_number;
 	int i;
@@ -345,14 +350,25 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 		{ "ID_INPUT_KEYBOARD", UP_DEVICE_KIND_KEYBOARD },
 	};
 	/* The type priority if we have multiple siblings,
-	 * i.e. we select the first of the current type of the found type. */
+	 * i.e. we select the first of the current type of the found type.
+	 * Give a new priority for device type since the GAMING_INPUT may include
+	 * a keyboard, a touchpad, and... etc, for example Sony DualShock4 joystick.
+	 * A mouse and a touchpad may include a mouse and a keyboard.
+	 * Therefore, the priority is:
+	 * 1. Gaming_input
+	 * 2. Audio
+	 * 3. Keyboard
+	 * 4. Tablet
+	 * 5. Touchpad
+	 * 6. Mouse
+	*/
 	UpDeviceKind priority[] = {
+		UP_DEVICE_KIND_GAMING_INPUT,
 		UP_DEVICE_KIND_OTHER_AUDIO,
 		UP_DEVICE_KIND_KEYBOARD,
 		UP_DEVICE_KIND_TABLET,
 		UP_DEVICE_KIND_TOUCHPAD,
-		UP_DEVICE_KIND_MOUSE,
-		UP_DEVICE_KIND_GAMING_INPUT,
+		UP_DEVICE_KIND_MOUSE
 	};
 	/* Form-factors set in rules.d/78-sound-card.rules in systemd */
 	struct {
@@ -453,7 +469,19 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 		g_debug ("Type changed from %s to %s",
 			 up_device_kind_to_string(cur_type),
 			 up_device_kind_to_string(new_type));
-		g_object_set (device, "type", new_type, NULL);
+		new_model_name = g_udev_device_get_sysfs_attr (input, "name");
+		/* The model name of a device component may be different. For example, DualSense
+		 * joystick owns "Sony Interactive Entertainment DualSense Wireless Controller"
+		 * for the joystick and "Sony Interactive Entertainment DualSense Wireless Controller
+		 * Motion Sensors" for the accelerometer. If the type is change, the corresponding
+		 * model name have to be changed too. */
+		if (new_model_name != NULL)
+			g_object_set (device,
+				      "type", new_type,
+				      "model", new_model_name,
+				      NULL);
+		else
+			g_object_set (device, "type", new_type, NULL);
 	}
 }
 
@@ -539,7 +567,7 @@ up_device_supply_guess_type (GUdevDevice *native,
 			g_warning ("USB power supply %s without usb_type property, please report",
 				   native_path);
 	} else {
-		g_warning ("did not recognise type %s, please report", device_type);
+		g_warning ("did not recognize type %s, please report", device_type);
 	}
 
 out:

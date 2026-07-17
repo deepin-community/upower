@@ -1,5 +1,5 @@
 project('upower', 'c',
-    version: '1.90.3',
+    version: '1.90.9',
     license: 'GPLv2+',
     default_options: [
         'buildtype=debugoptimized',
@@ -46,6 +46,16 @@ gobject_dep = dependency('gobject-2.0', version: '>=' + glib_min_version)
 gio_dep = dependency('gio-2.0', version: '>=' + glib_min_version)
 gio_unix_dep = dependency('gio-unix-2.0', version: '>=' + glib_min_version)
 m_dep = cc.find_library('m', required: true)
+
+polkit = dependency('polkit-gobject-1', version: '>= 0.103',
+                    required: get_option('polkit').disable_auto_if(host_machine.system() != 'linux'))
+if polkit.found()
+  cdata.set('HAVE_POLKIT', '1')
+  if polkit.version().version_compare('>= 0.114')
+    cdata.set('HAVE_POLKIT_0_114', '1')
+  endif
+  cdata.set_quoted ('POLKIT_ACTIONDIR', polkit.get_variable(pkgconfig: 'actiondir'))
+endif
 
 xsltproc = find_program('xsltproc', disabler: true, required: get_option('gtk-doc') or get_option('man'))
 
@@ -100,11 +110,21 @@ if historydir == ''
     historydir = get_option('prefix') / get_option('localstatedir') / 'lib' / 'upower'
 endif
 
+statedir = get_option('statedir')
+if statedir == ''
+    statedir = get_option('prefix') / get_option('localstatedir') / 'lib' / 'upower'
+endif
+
 dbusdir = get_option('datadir') / 'dbus-1'
 systemdsystemunitdir = get_option('systemdsystemunitdir')
 if systemdsystemunitdir == ''
     systemd_dep = dependency('systemd')
     systemdsystemunitdir = systemd_dep.get_variable(pkgconfig: 'systemdsystemunitdir')
+endif
+
+datadir = get_option('datadir')
+if datadir == ''
+    datadir = join_paths(prefix, get_option('datadir'))
 endif
 
 # Generate configuration file
@@ -118,6 +138,8 @@ subdir('libupower-glib')
 subdir('src')
 subdir('tools')
 subdir('doc')
+subdir('data/zsh-completion')
+subdir('policy')
 
 pkgconfig = import('pkgconfig')
 pkgconfig.generate(
@@ -125,7 +147,7 @@ pkgconfig.generate(
     description: 'UPower is a system daemon for managing power devices',
     version: meson.project_version(),
     libraries: libupower_glib,
-    requires: [glib_dep, gobject_dep],
+    requires: [glib_dep, gobject_dep, polkit],
     subdirs: 'libupower-glib',
 )
 

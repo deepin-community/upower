@@ -52,6 +52,9 @@ typedef struct {
 	/* dynamic values */
 	gint64 fast_repoll_until;
 	gboolean repoll_needed;
+
+	/* state path */
+	const char *state_dir;
 } UpDeviceBatteryPrivate;
 
 G_DEFINE_TYPE_EXTENDED (UpDeviceBattery, up_device_battery, UP_TYPE_DEVICE, 0,
@@ -196,7 +199,7 @@ up_device_battery_update_poll_frequency (UpDeviceBattery *self,
 	 * and one of the following holds true:
 	 *  1. The current stat is unknown; we hope that this is transient
 	 *     and re-poll.
-	 *  2. A change occured on a line power supply. This likely means that
+	 *  2. A change occurred on a line power supply. This likely means that
 	 *     batteries switch between charging/discharging which does not
 	 *     always result in a separate uevent.
 	 *
@@ -256,7 +259,7 @@ up_device_battery_report (UpDeviceBattery *self,
 	/* QUIRK:
 	 *
 	 * There is an old bug where some Lenovo machine switched from reporting
-	 * energy to reporting charge numbers. The code used to react by 
+	 * energy to reporting charge numbers. The code used to react by
 	 * reloading everything, however, what apparently happens is that the
 	 * *energy* value simply starts being reported through *charge*
 	 * attributes.
@@ -267,7 +270,7 @@ up_device_battery_report (UpDeviceBattery *self,
 	 * incorrectly multiplied by the voltage.
 	 *
 	 * Said differently, just assuming the units did *not* change should
-	 * give us a saner value. Obviously, things will fall appart if upower
+	 * give us a saner value. Obviously, things will fall apart if upower
 	 * is restarted and this should be fixed in the kernel or firmware.
 	 *
 	 * Unfortunately, the hardware is quite old (X201s) which makes it hard
@@ -395,9 +398,90 @@ up_device_battery_report (UpDeviceBattery *self,
 	up_device_battery_update_poll_frequency (self, values->state, reason);
 }
 
+static gboolean
+up_device_battery_set_charge_thresholds(UpDeviceBattery *self, gdouble start, gdouble end, GError **error)
+{
+	UpDeviceBatteryClass *klass = UP_DEVICE_BATTERY_GET_CLASS (self);
+	if (klass->set_battery_charge_thresholds == NULL)
+		return FALSE;
+
+	return klass->set_battery_charge_thresholds(&self->parent_instance, start, end, error);
+}
+
+static const gchar *
+up_device_battery_get_state_dir (UpDeviceBattery *self)
+{
+	UpDevice *device = UP_DEVICE (self);
+	const gchar *state_dir_override = NULL;
+	UpDeviceBatteryPrivate *priv = up_device_battery_get_instance_private (self);
+
+	if (priv->state_dir != NULL)
+		return priv->state_dir;
+
+	state_dir_override = up_device_get_state_dir_override (device);
+
+	if (state_dir_override != NULL)
+		priv->state_dir = state_dir_override;
+	else
+		priv->state_dir = STATE_DIR;
+
+	return priv->state_dir;
+}
+
+static gboolean
+up_device_battery_get_battery_charge_threshold_config(UpDeviceBattery *self)
+{
+	g_autofree gchar *filename = NULL;
+	g_autofree gchar *data = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *state_filename = NULL;
+	const char *state_dir = NULL;
+
+	state_filename = g_strdup_printf("charging-threshold-status");
+	state_dir = up_device_battery_get_state_dir (self);
+	filename = g_build_filename (state_dir, state_filename, NULL);
+	if (g_file_get_contents (filename, &data, NULL, &error) == FALSE) {
+		g_debug ("failed to read battery charge threshold: %s", error->message);
+		return FALSE;
+	}
+
+	if (g_strcmp0(data, "1") == 0)
+		return TRUE;
+
+	return FALSE;
+}
+
+static void
+up_device_battery_recover_battery_charging_threshold (UpDeviceBattery *self, UpBatteryInfo *info, gboolean *charge_threshold_enabled)
+{
+	gboolean enabled = FALSE;
+	GError *error = NULL;
+
+	if (info == NULL)
+		return;
+
+	enabled = up_device_battery_get_battery_charge_threshold_config (self);
+
+	if (info->charge_control_supported == TRUE) {
+		if (enabled == TRUE) {
+			up_device_battery_set_charge_thresholds (self,
+								 info->charge_control_start_threshold,
+								 info->charge_control_end_threshold,
+								 &error);
+			if (error != NULL) {
+				enabled = FALSE;
+				g_warning ("Fail on setting charging threshold: %s", error->message);
+				g_clear_error (&error);
+			}
+		}
+	}
+	*charge_threshold_enabled = enabled;
+}
+
 void
 up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 {
+	gboolean charge_threshold_enabled = FALSE;
 	UpDeviceBatteryPrivate *priv = up_device_battery_get_instance_private (self);
 
 	/* First, sanitize the information. */
@@ -437,6 +521,9 @@ up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 
 		/* See above, we have a (new) battery plugged in. */
 		if (!priv->present) {
+			/* Set up battery charging threshold when a new battery was plugged in */
+			up_device_battery_recover_battery_charging_threshold (self, info, &charge_threshold_enabled);
+
 			g_object_set (self,
 			              "is-present", TRUE,
 			              "vendor", info->vendor,
@@ -445,6 +532,10 @@ up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 			              "technology", info->technology,
 			              "has-history", TRUE,
 			              "has-statistics", TRUE,
+				      "charge-start-threshold", info->charge_control_start_threshold,
+				      "charge-end-threshold", info->charge_control_end_threshold,
+				      "charge-threshold-enabled", charge_threshold_enabled,
+				      "charge-threshold-supported", info->charge_control_supported,
 			              NULL);
 
 			priv->present = TRUE;
@@ -504,19 +595,117 @@ up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 		              "vendor", NULL,
 		              "model", NULL,
 		              "serial", NULL,
+			      "state", UP_DEVICE_STATE_UNKNOWN,
 		              "technology", UP_DEVICE_TECHNOLOGY_UNKNOWN,
 		              "capacity", (gdouble) 0.0,
+			      "energy", (gdouble) 0.0,
 		              "energy-full", (gdouble) 0.0,
 		              "energy-full-design", (gdouble) 0.0,
+			      "voltage", (gdouble) 0.0,
 		              "charge-cycles", -1,
 		              "has-history", FALSE,
 		              "has-statistics", FALSE,
+			      "percentage", (gdouble) 0.0,
+			      "temperature", (gdouble) 0.0,
 		              "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
+			      "charge-start-threshold", 0,
+			      "charge-end-threshold", 0,
+			      "charge-threshold-enabled", FALSE,
+			      "charge-threshold-supported", FALSE,
 		              NULL);
 	}
 }
 
+static gboolean
+up_device_battery_charge_threshold_state_write(UpDeviceBattery *self, gboolean enabled, const gchar *state_file) {
+	g_autofree gchar *filename = NULL;
+	GError *error = NULL;
+	const gchar *state_dir;
 
+	state_dir = up_device_battery_get_state_dir (self);
+	filename = g_build_filename (state_dir, state_file, NULL);
+	if (!g_file_set_contents (filename, enabled ? "1": "0" , -1, &error)) {
+		g_error ("failed to save battery charge threshold: %s", error->message);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/**
+ * up_device_battery_set_charge_threshold:
+ **/
+static gboolean
+up_device_battery_set_charge_threshold (UpExportedDevice *skeleton,
+					GDBusMethodInvocation *invocation,
+					gboolean enabled,
+					UpDeviceBattery *self)
+{
+	gboolean ret = FALSE;
+	gboolean charge_threshold_enabled;
+	gboolean charge_threshold_supported;
+	guint charge_start_threshold = 0;
+	guint charge_end_threshold = 100;
+	g_autoptr (GError) error = NULL;
+	g_autofree gchar *state_file = NULL;
+	UpDevice *device = UP_DEVICE (self);
+
+	if (device == NULL) {
+		g_dbus_method_invocation_return_error (invocation,
+						       UP_DAEMON_ERROR, UP_DAEMON_ERROR_GENERAL,
+						       "Error on getting device");
+		return FALSE;
+	}
+
+	if (!up_device_polkit_is_allowed (device, invocation)) {
+		g_dbus_method_invocation_return_error (invocation,
+						       UP_DAEMON_ERROR, UP_DAEMON_ERROR_GENERAL,
+						       "Operation is not allowed.");
+		return TRUE;
+	}
+
+	g_object_get (self,
+		      "charge-threshold-enabled", &charge_threshold_enabled,
+		      "charge-threshold-supported", &charge_threshold_supported,
+		      "charge-start-threshold", &charge_start_threshold,
+		      "charge-end-threshold", &charge_end_threshold,
+		      NULL);
+
+	if (!charge_threshold_supported) {
+		g_dbus_method_invocation_return_error (invocation,
+						       UP_DAEMON_ERROR, UP_DAEMON_ERROR_GENERAL,
+						       "setting battery charge thresholds is unsupported");
+		return TRUE;
+	}
+
+	state_file = g_strdup_printf("charging-threshold-status");
+	if (!up_device_battery_charge_threshold_state_write (self, enabled, state_file)) {
+		g_dbus_method_invocation_return_error (invocation,
+						       UP_DAEMON_ERROR, UP_DAEMON_ERROR_GENERAL,
+						       "writing charge limits state file '%s' failed", state_file);
+		return TRUE;
+	}
+
+	if (enabled)
+		ret = up_device_battery_set_charge_thresholds (self, charge_start_threshold, charge_end_threshold, &error);
+	else
+		ret = up_device_battery_set_charge_thresholds (self, 0, 100, &error);
+
+	if (!ret) {
+		g_dbus_method_invocation_return_error (invocation,
+						       UP_DAEMON_ERROR, UP_DAEMON_ERROR_GENERAL,
+						       "failed on setting charging threshold: %s", error->message);
+		return TRUE;
+	}
+
+	g_object_set(self,
+		     "charge-threshold-enabled", enabled,
+		     NULL);
+
+	up_exported_device_complete_enable_charge_threshold (skeleton, invocation);
+
+	return TRUE;
+}
 
 static void
 up_device_battery_init (UpDeviceBattery *self)
@@ -526,6 +715,9 @@ up_device_battery_init (UpDeviceBattery *self)
 	              "power-supply", TRUE,
 	              "is-rechargeable", TRUE,
 	              NULL);
+
+	g_signal_connect (self, "handle-enable-charge-threshold",
+			  G_CALLBACK (up_device_battery_set_charge_threshold), self);
 }
 
 static void

@@ -602,7 +602,7 @@ up_backend_apm_event_thread(gpointer object)
 	}
 #endif
 	return NULL;
-	/* shouldnt be reached ? */
+	/* shouldn't be reached ? */
 }
 
 /**
@@ -685,4 +685,3 @@ up_backend_finalize (GObject *object)
 
 	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
 }
-

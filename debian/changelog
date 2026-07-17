@@ -1,9 +1,69 @@
-upower (1.90.3-1deepin1) unstable; urgency=medium
+upower (1.90.9-1) unstable; urgency=medium
 
-  * Patch: uniontech-not-action.patch 
-  * Description: Disable upower's critical power action to allow external control.
+  * New upstream version 1.90.9
 
- -- xinpeng.wang <wangxinpeng@uniontech.com>  Fri, 10 Oct 2025 14:58:14 +0800
+ -- Michael Biebl <biebl@debian.org>  Thu, 10 Apr 2025 20:14:42 +0200
+
+upower (1.90.8-1) unstable; urgency=medium
+
+  * New upstream version 1.90.8
+  * Drop patches, merged upstream
+  * Bump Standards-Version to 4.7.2
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 31 Mar 2025 16:15:49 +0200
+
+upower (1.90.7-1) unstable; urgency=medium
+
+  * New upstream version 1.90.7
+  * Rebase patches
+  * Install new zsh completions
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 09 Jan 2025 12:32:38 +0100
+
+upower (1.90.6-2) unstable; urgency=medium
+
+  * Replace dependency on dbus with default-dbus-system-bus | dbus-system-bus.
+    This makes it easier to swap in alternative implementations like
+    dbus-broker.
+  * Fix race condition in test_sibling_priority_no_overwrite.
+    Patch cherry-picked from upstream Git. (Closes: #1072748)
+
+ -- Michael Biebl <biebl@debian.org>  Fri, 27 Sep 2024 00:55:12 +0200
+
+upower (1.90.6-1) unstable; urgency=medium
+
+  * New upstream version 1.90.6
+  * Rebase patches
+  * Enable polkit support.
+    Setting the battery charging threshold utilizes polkit.
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 25 Sep 2024 13:45:09 +0200
+
+upower (1.90.5-1) unstable; urgency=medium
+
+  * New upstream version 1.90.5
+  * Rebase patches
+  * Update symbols for libupower-glib3.
+    Add new up_exported symbols but mark them as optional, as they are not
+    public API.
+  * Add ${gir:Depends} and ${gir:Provides} to libupower-glib-dev
+  * Add Build-Depends on gir1.2-gobject-2.0-dev and gir1.2-gio-2.0-dev as
+    suggested by dh_girepository
+  * Request standard Salsa-CI but disable test-crossbuild-arm64
+
+ -- Michael Biebl <biebl@debian.org>  Tue, 27 Aug 2024 17:18:24 +0200
+
+upower (1.90.4-1) unstable; urgency=medium
+
+  [ Jeremy Bícha ]
+  * Update debian/watch
+
+  [ Michael Biebl ]
+  * New upstream version 1.90.4
+  * Fix possible race condition in test_bluetooth_hidpp_mouse
+    (Closes: #1069789)
+
+ -- Michael Biebl <biebl@debian.org>  Sat, 17 Aug 2024 21:10:27 +0200
 
 upower (1.90.3-1) unstable; urgency=medium
 
