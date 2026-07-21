@@ -1,3 +1,11 @@
+upower (1.90.9-1deepin1) unstable; urgency=medium
+
+  * Restore deepin/uniontech patches: Patch: uniontech-not-action.patch
+    Description: Disable upower's critical power action to allow
+    external control.
+
+ -- lichenggang <lichenggang@uniontech.com>  Tue, 21 Jul 2026 20:57:52 +0800
+
 upower (1.90.9-1) unstable; urgency=medium
 
   * New upstream version 1.90.9
